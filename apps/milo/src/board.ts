@@ -22,13 +22,14 @@ main{max-width:900px;margin:0 auto;padding:0 16px 40px;display:grid;gap:16px}
 const I={lookup:"🗂️",owner_agent:"🤖",slack:"💬",imessage:"📱",call:"📞",done:"✅"};
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 async function load(){
-  let rs=[];try{rs=await (await fetch("/api/requests")).json()}catch{}
-  if(!rs.length)return;
-  document.getElementById("m").innerHTML=rs.slice(0,4).map(r=>{
+  let rs=[],ap=[];try{rs=await (await fetch("/api/requests")).json();ap=await (await fetch("/api/payments/approvals")).json()}catch{}
+  if(!rs.length&&!ap.length)return;
+  const pay=ap.length?'<div class="card"><div class="q">Always-approved endpoints</div>'+ap.map(a=>'<div class="step"><span class="i">💳</span><span>'+esc(a.endpoint)+' · up to '+esc(a.price)+' · by '+esc(a.approvedBy||"someone")+'</span></div>').join("")+'</div>':'';
+  document.getElementById("m").innerHTML=pay+rs.slice(0,4).map(r=>{
     const steps=r.log.filter(l=>l.step!=="info").map(l=>'<div class="step '+(l.ok===false?"bad":"")+'"><span class="i">'+(l.ok===false?"✗":I[l.step]||"•")+'</span><span>'+esc(l.text)+'</span></div>').join("");
     const d=r.decision;
     const dec=d?'<div class="dec '+(d.outcome==="no_answer"?"no":"")+'"><b>'+esc(d.outcome)+'</b> · '+esc(d.answer)+(d.instead?'<br>Instead: '+esc(d.instead):'')+(d.decidedBy?'<br>Decided by '+esc(d.decidedBy)+' via '+esc(d.source.channel):'')+'</div>':'';
-    return '<div class="card"><div class="q">'+esc(r.question)+(r.status==="running"?'<span class="pill">live</span>':'')+'</div><div class="meta">'+esc(r.requester)+(r.file?' · '+esc(r.file):'')+' · urgency '+esc(r.urgency)+'</div>'+steps+dec+'</div>';
+    return '<div class="card"><div class="q">'+esc(r.question)+(r.status==="running"?'<span class="pill">live</span>':'')+'</div><div class="meta">'+esc(r.requester)+(r.file?' · '+esc(r.file):'')+(r.payment?' · 💳 '+esc(r.payment.price)+' · '+esc(r.payment.endpoint):'')+' · urgency '+esc(r.urgency)+'</div>'+steps+dec+'</div>';
   }).join("");
 }
 load();setInterval(load,1000);

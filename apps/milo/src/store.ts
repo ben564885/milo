@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, type Decision, type Step, type Urgency } from "@milo/shared";
+import { ROOT, type Decision, type PaymentAsk, type Step, type Urgency } from "@milo/shared";
 
 export type LogLine = { at: string; step: Step | "done" | "info"; text: string; ok?: boolean };
 
@@ -25,6 +25,7 @@ export type Request = {
   decision?: Decision;
   replied?: boolean;
   options?: string[];
+  payment?: PaymentAsk;
   listening?: boolean;
   superseded?: boolean;
   call?: { transcript: string; recordingPath?: string; seconds: number; joined: string[] };
@@ -32,7 +33,7 @@ export type Request = {
 };
 
 mkdirSync(join(ROOT, "data"), { recursive: true });
-const db = new DatabaseSync(join(ROOT, "data/milo.db"));
+export const db = new DatabaseSync(join(ROOT, "data/milo.db"));
 db.exec("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, created_at TEXT, json TEXT)");
 
 const listeners = new Set<(r: Request) => void>();

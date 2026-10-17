@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { callBrief, DEMO, extractDecision, loadIdentities, ownerOf, type AskPayload, type Decision, type People, type Person, type Step } from "@milo/shared";
+import { callBrief, DEMO, endpointName, extractDecision, loadIdentities, ownerOf, PAY_OPTIONS, paymentScope, type AskPayload, type Decision, type People, type Person, type Step } from "@milo/shared";
 import * as ch from "./channels.ts";
 import { startConference } from "./conference.ts";
 import { findDecision, memoriesFor, recordDecision, remember } from "./memory.ts";
+import { checkApproval, saveApproval } from "./payments.ts";
 import { allowed, resolvePeople } from "./people.ts";
 import { clear, emit, waitFor, type Signal } from "./signals.ts";
 import { list, save, type Request } from "./store.ts";
@@ -21,6 +22,8 @@ const ICON: Record<string, string> = { lookup: "🗂️", owner_agent: "🤖", s
 
 /** End older requests that are still waiting on the same thing, so they don't post stale messages later. */
 function supersedeOlder(r: Request) {
+  // Two agents paying the same endpoint at once are two real payments; never cancel one for the other.
+  if (r.payment) return;
   for (const old of list(50)) {
     if (old.id === r.id || old.status !== "running") continue;
     const same = r.file ? old.file === r.file : old.question.trim().toLowerCase() === r.question.trim().toLowerCase();
@@ -41,7 +44,8 @@ export function newRequest(p: AskPayload & { a2aTaskId?: string }): Request {
     requester: p.requester ?? "an agent",
     a2aTaskId: p.a2aTaskId,
     owner: p.owner,
-    options: p.options?.length ? p.options : undefined,
+    options: p.payment ? PAY_OPTIONS : p.options?.length ? p.options : undefined,
+    payment: p.payment,
     step: "lookup",
     status: "running",
     log: [],
@@ -147,6 +151,22 @@ export async function run(r: Request): Promise<Decision> {
 async function ladder(r: Request, people: People, owner: Person | undefined, target: Person | undefined, names: string[], avail: Awaited<ReturnType<typeof ch.availability>>): Promise<Decision | undefined> {
   // 0. Already decided?
   r.step = "lookup"; save(r);
+  // A payment is covered only by an exact standing approval for that endpoint; a person decides everything else.
+  if (r.payment) {
+    const p = r.payment;
+    const hit = checkApproval(p);
+    if (hit?.covered) {
+      await log(r, "lookup", `${hit.approval.approvedBy ?? "someone"} already approved ${p.endpoint} for every call (up to ${hit.approval.price}), no need to bug anyone`);
+      return decision({ outcome: "approved", answer: `Standing approval for ${p.endpoint} up to ${hit.approval.price}.`, choice: "always approve", scope: "always", decidedBy: hit.approval.approvedBy, source: { channel: "memory", ref: hit.approval.requestId } });
+    }
+    if (hit) {
+      await log(r, "lookup", `${p.endpoint} was approved before, but ${hit.changed}, so asking again`, false);
+      r.context = `${r.context}\nThis endpoint was approved before at ${hit.approval.price}, but ${hit.changed}.`.trim(); save(r);
+    } else {
+      await log(r, "lookup", `no approval on file for ${p.endpoint}, a person has to decide`);
+    }
+    return reach(r, people, target, owner, names, avail);
+  }
   const found = await findDecision(r.question, r.file);
   if (found) {
     const outcome = /Outcome: (\w+)/.exec(found.body)?.[1] as Decision["outcome"] | undefined;
@@ -185,7 +205,10 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     r.step = "slack"; save(r);
     let q = asked(r).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
-    await say(r, `hey ${ch.mention(target)}, quick one from ${lc(r.requester)}: ${lc(q)}`);
+    const p = r.payment;
+    await say(r, p
+      ? `hey ${ch.mention(target)}, ${lc(r.requester)} wants to pay *${p.price}* to call \`${p.endpoint}\`${p.description ? ` (${p.description})` : ""}. approve once, always approve this endpoint, or deny?`
+      : `hey ${ch.mention(target)}, quick one from ${lc(r.requester)}: ${lc(q)}`);
     await log(r, "slack", `waiting ${Math.round(T.slack / 1000)}s for ${target!.name} to answer here`);
     const d = await awaitHuman(r, T.slack, names, target!);
     if (d) return d;
@@ -201,7 +224,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     // Inkbox blocks links in a first iMessage, and "billing.ts" looks like a domain. Break the dots.
     const noLinks = (s: string) => s.replace(/`/g, "").replace(/\(?[\w./-]*?([\w-]+)\.[a-z]{1,5}\b\)?/gi, "the $1 file").replace(/https?:\S+/g, "");
     // Two casual texts: "yo", then the question. Before a person's first reply, each must be under 160 characters.
-    let q = noLinks(asked(r)).trim();
+    let q = noLinks(r.payment ? `${r.requester} wants to pay ${r.payment.price} for ${endpointName(r.payment.url)}. ok once, always, or no? (👍 once, ❤️ always)` : asked(r)).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
     if (q.length > 155) q = q.slice(0, 154).trimEnd() + "…";
     const sent = await ch.imessageSend(target.phone, "yo")
@@ -334,6 +357,16 @@ async function awaitHuman(r: Request, ms: number, names: string[], who: Person):
 }
 
 async function interpret(r: Request, sig: Signal, names: string[], who: Person): Promise<Decision | undefined> {
+  // Payment: 👍 approves this call, ❤️ approves the endpoint from now on, 👎 denies.
+  if (sig.kind === "imessage_tapback" && r.payment) {
+    const always = sig.reaction === "love" || sig.emoji === "❤️";
+    const once = ["like", "emphasize"].includes(sig.reaction) || sig.emoji === "👍";
+    const no = sig.reaction === "dislike" || sig.emoji === "👎";
+    if (!always && !once && !no) return undefined;
+    const choice = no ? "deny" : always ? "always approve" : "approve once";
+    await log(r, "imessage", `${who.name} reacted ${no ? "👎, deny" : always ? "❤️, always approve" : "👍, approve once"}`);
+    return decision({ outcome: no ? "blocked" : "approved", answer: `${choice} (iMessage reaction).`, choice, decidedBy: who.name, source: { channel: "imessage", ref: r.imessageId } });
+  }
   if (sig.kind === "imessage_tapback" && r.options?.length) return undefined;
   if (sig.kind === "imessage_tapback") {
     const up = ["like", "love", "emphasize"].includes(sig.reaction) || sig.emoji === "👍";
@@ -392,6 +425,11 @@ async function buildCallReason(r: Request, target: Person, owner?: Person, peopl
 
 async function finish(r: Request, d: Decision, people: People, owner?: Person, target?: Person) {
   clear(r.id);
+  // A payment decision is approve-once, always-approve, or deny. Anything that isn't a clear approval is a deny.
+  if (r.payment && d.outcome !== "no_answer" && !(d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? ""))) {
+    const scope = paymentScope(d);
+    d = scope === "deny" ? { ...d, outcome: "blocked", scope: undefined } : { ...d, outcome: "approved", scope };
+  }
   r.decision = d;
   r.step = "done";
   r.status = "done";
@@ -401,8 +439,14 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
   // "Ask Philip" is a pointer, not a decision; never save it.
   if (d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? "")) d = r.decision = { ...d, outcome: "no_answer" };
   if (d.outcome !== "no_answer" && d.source.channel !== "memory") {
-    const noteId = await recordDecision({ question: r.question, file: r.file, decision: d, requester: r.requester }).catch((e) => { console.warn("[notes]", e.message); return undefined; });
-    if (noteId) await log(r, "info", `saved it for next time`);
+    // Payments are never saved as notes: a one-time approval must not be found and reused later.
+    if (r.payment && d.scope === "always") {
+      saveApproval({ ...r.payment, approvedBy: d.decidedBy, at: d.at, requestId: r.id });
+      await log(r, "info", `saved: ${r.requester} can pay ${r.payment.endpoint} up to ${r.payment.price} without asking`);
+    } else if (!r.payment) {
+      const noteId = await recordDecision({ question: r.question, file: r.file, decision: d, requester: r.requester }).catch((e) => { console.warn("[notes]", e.message); return undefined; });
+      if (noteId) await log(r, "info", `saved it for next time`);
+    }
     const decider = Object.values(people).find((p) => p.name === d.decidedBy) ?? owner;
     await remember(decider, "context", `Decided on ${new Date().toDateString()}: ${r.file ?? r.question} → ${d.outcome}${d.instead ? `; instead: ${d.instead}` : ""}.`);
     if (target && decider && decider.handle !== target.handle) {
@@ -422,7 +466,8 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
 
   if (r.a2aTaskId) {
     await a2aChains.get(r.id);
-    const text = isSuperseded(r) && d.outcome === "no_answer" ? "Replaced by a newer question about the same thing. Use the answer to that one." : d.outcome === "no_answer" ? "No human decision yet. Do not proceed with this change." : `Decision: ${d.choice ? `use ${d.choice}` : d.outcome}. ${d.answer}${d.instead ? ` Instead: ${d.instead}` : ""}`;
+    const text = isSuperseded(r) && d.outcome === "no_answer" ? "Replaced by a newer question about the same thing. Use the answer to that one." : d.outcome === "no_answer" ? "No human decision yet. Do not proceed with this change." : r.payment ? `Decision: ${d.scope === "always" ? "pay; this endpoint is approved from now on" : d.scope === "once" ? "pay this one time" : "do not pay"}. ${d.answer}`
+      : `Decision: ${d.choice ? `use ${d.choice}` : d.outcome}. ${d.answer}${d.instead ? ` Instead: ${d.instead}` : ""}`;
     await ch.a2aComplete(r.a2aTaskId, text, { ...d, requestId: r.id }).catch((e) => console.warn("[a2a] complete failed:", e.message));
   }
 }
@@ -437,6 +482,7 @@ async function sayOutcome(r: Request, d: Decision, people: People) {
     if (r.slack?.threadTs) await say(r, r.listening ? "still nothing, holding off for now" : "couldn't reach anyone yet, holding off for now");
     return;
   }
+  if (ch_ === "memory" && r.payment) return void (await say(r, `fyi ${lc(r.requester)} is paying ${r.payment.price} for \`${r.payment.endpoint}\`. ${by} approved this endpoint for every call, so i didn't bug anyone`));
   if (ch_ === "memory") return void (await say(r, `fyi ${lc(r.requester)} asked about ${shortFile(r)} again. ${by} already said ${verdict} on this earlier${instead}, so i didn't bug anyone`));
   if (ch_ === "owner_agent") return void (await say(r, `fyi ${lc(r.requester)} asked about ${shortFile(r)}. ${lc(d.decidedBy ?? "the owner's agent")} had the answer (${verdict}${instead}), so i didn't bug anyone`));
   if (ch_ === "slack") return void (await say(r, `got it, thanks${instead ? ` ${instead.slice(2)}` : ""}`));

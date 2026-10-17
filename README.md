@@ -53,10 +53,30 @@ curl -X POST localhost:8787/api/reset   # clear demo decisions
 
 The interrupt budget in `config/people.yaml` sets how high Milo may go for each person (max step, minimum urgency for calls, quiet hours).
 
+## Paying x402 endpoints (`paid_fetch`)
+
+Agents call paid HTTP APIs through the `paid_fetch` MCP tool instead of `curl`. When an endpoint answers `402 Payment Required` (x402), Milo asks a person before any money moves, using the same ladder (Slack → iMessage → call). The choices are **approve once**, **always approve** (this endpoint, from now on), or **deny**.
+
+- An endpoint is the method + origin + path, without the query string: `GET https://api.example.com/weather` covers `?city=sf` and `?city=nyc`.
+- An "always approve" is saved locally (`payment_approvals` in `data/milo.db`) with the exact terms the person saw: price, token, network and recipient. Later calls are paid without asking only if the price is the same or lower and nothing else changed. Otherwise Milo asks again and says what changed.
+- "approve once" and a plain "yes" pay that one call only. Payment decisions are never saved as Notes, so a one-time OK can't be reused by fuzzy matching. The owner's agent is skipped: a person always decides spending.
+- iMessage: 👍 = approve once, ❤️ = always approve, 👎 = deny.
+- Hard limits that no approval overrides: USDC only, at most `MILO_PAY_MAX_USD` (default $1) per call. Calls over the limit are refused without asking anyone.
+- Wallet: `X402_PRIVATE_KEY` (use a Base Sepolia testnet key for demos). Without one, a throwaway unfunded wallet is used. That works with the local demo endpoint; real sellers will reject it.
+
+```bash
+curl localhost:8787/x402/demo/weather                       # local 402 endpoint ($0.01 testnet USDC; ?price=<atomic> to change; does not verify or settle)
+curl localhost:8787/api/payments/approvals                  # standing approvals
+curl -X DELETE 'localhost:8787/api/payments/approvals?endpoint=GET%20http://localhost:8787/x402/demo/weather'   # revoke one
+```
+
+Ask Claude Code: *"Use paid_fetch to get the weather from http://localhost:8787/x402/demo/weather"*. The first call asks a human. After "always approve", the next call pays without asking and posts an fyi in Slack.
+
 ## QA
 
 ```bash
 pnpm tsx scripts/qa/unit.ts                              # owners, budget, heuristics, text cleanup
+pnpm tsx scripts/qa/x402.ts                              # x402: helpers, standing approvals, real 402 round trip (offline)
 (cd apps/milo && pnpm exec tsx src/qa-webhooks.ts)       # simulated webhooks → signals
 pnpm tsx scripts/qa/owner.ts                             # owner agent over A2A
 pnpm tsx scripts/qa/seed.ts                              # seed a decision (Act 2 without a call)

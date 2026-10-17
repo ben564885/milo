@@ -8,6 +8,8 @@ import { attachCallSockets } from "./conference.ts";
 import { availability } from "./channels.ts";
 import { newRequest, run, timeouts } from "./engine.ts";
 import { startInbox } from "./inbox.ts";
+import { mountX402Demo } from "./x402-demo.ts";
+import { listApprovals, resetApprovals, revokeApproval } from "./payments.ts";
 import { failInterrupted, get, list, reset } from "./store.ts";
 import { handleWebhook } from "./webhooks.ts";
 
@@ -55,9 +57,20 @@ app.post("/api/ask", async (c) => {
   return c.json({ id: req.id, status: "running" }, 202);
 });
 
-// Reset demo state: local requests + Milo decision notes.
+// Standing "always approve" payment approvals, and a way to take one back.
+app.get("/api/payments/approvals", (c) => c.json(listApprovals()));
+app.delete("/api/payments/approvals", (c) => {
+  const endpoint = c.req.query("endpoint");
+  if (!endpoint) return c.json({ error: "endpoint is required, e.g. ?endpoint=GET https://api.example.com/weather" }, 400);
+  return revokeApproval(endpoint) ? c.json({ ok: true }) : c.notFound();
+});
+
+mountX402Demo(app);
+
+// Reset demo state: local requests, payment approvals, and Milo decision notes.
 app.post("/api/reset", async (c) => {
   reset();
+  resetApprovals();
   const notes = (await adminClient().notes.list({ q: "milo-decision", limit: 100 }).catch(() => [])) as any[];
   for (const n of notes) if (String(n.body).includes("[milo-decision]")) await adminClient().notes.delete(n.id).catch(() => {});
   return c.json({ ok: true, deletedNotes: notes.length });
