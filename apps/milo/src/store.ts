@@ -24,6 +24,7 @@ export type Request = {
   callId?: string;
   decision?: Decision;
   replied?: boolean;
+  lastReply?: string;
   options?: string[];
   listening?: boolean;
   superseded?: boolean;
