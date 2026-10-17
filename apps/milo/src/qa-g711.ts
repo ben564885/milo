@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { decode, encode, mix, SILENCE, FRAME } from "./g711.ts";
+const pcm = new Int16Array([0, 100, -100, 1000, -1000, 8000, -8000, 30000, -30000]);
+const round = decode(encode(pcm));
+for (let i = 0; i < pcm.length; i++) assert.ok(Math.abs(round[i] - pcm[i]) <= Math.max(16, Math.abs(pcm[i]) * 0.07), `sample ${pcm[i]} -> ${round[i]}`);
+assert.equal(decode(SILENCE)[0], 0);
+const tone = encode(new Int16Array(FRAME).fill(4000));
+const mixed = decode(mix([tone, tone]));
+assert.ok(Math.abs(mixed[0] - 8000) < 600, `mix ${mixed[0]}`);
+assert.deepEqual(mix([tone, SILENCE]), encode(decode(tone)));
+console.log("g711 ok");

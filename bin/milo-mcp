@@ -1,0 +1,4 @@
+#!/bin/sh
+# Launch the Milo MCP server for any Claude Code session.
+# Remembers the caller's directory so Milo can read that repo's CODEOWNERS.
+MILO_CALLER_CWD="${MILO_CALLER_CWD:-$PWD}" exec pnpm --silent --dir "$(dirname "$0")/.." exec tsx packages/mcp/src/index.ts

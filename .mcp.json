@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "milo": { "command": "./bin/milo-mcp", "args": [] }
+  }
+}

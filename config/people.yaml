@@ -1,0 +1,30 @@
+# Humans Milo can reach, and the interrupt budget for each one.
+# Example values. Put real numbers in config/people.local.yaml (git-ignored); Milo reads that file first.
+# max_step: highest ladder step Milo may use (lookup, owner_agent, slack, imessage, call)
+# call_only_if: minimum urgency for a phone call
+people:
+  ben:
+    name: Ben
+    phone: "+15555550101"
+    email: ben@example.com
+    slack_user: ""          # Slack user ID (U...), see: pnpm tsx scripts/slack.ts users
+    agent: milo-ben
+    max_step: call
+    call_only_if: normal
+    quiet_hours: "23:30-07:00"
+  daniel:
+    name: Daniel
+    phone: "+15555550102"
+    email: ""
+    slack_user: ""          # Slack user ID (U...), see: pnpm tsx scripts/slack.ts users
+    agent: milo-daniel
+    max_step: call
+    call_only_if: normal
+  philip:
+    name: Philip
+    phone: "+15555550103"
+    email: ""
+    slack_user: ""          # Slack user ID (U...), see: pnpm tsx scripts/slack.ts users
+    agent: milo-philip
+    max_step: call
+    call_only_if: normal

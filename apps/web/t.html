@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>milo · call transcript</title><link rel="icon" href="/milo.png"><meta name="robots" content="noindex">
+<link rel="stylesheet" href="https://unpkg.com/lenis@1.1.13/dist/lenis.css">
+<style>
+:root{--bg:#fff7ef;--fg:#2a1a10;--muted:#9a7c68;--line:#f1dcc9;--card:#fff;--milo:#e8743b;--them:#2a1a10}
+@media (prefers-color-scheme:dark){:root{--bg:#1b130e;--fg:#f8eadf;--muted:#b89a85;--line:#3a2718;--card:#24180f;--milo:#f29a62;--them:#f8eadf}}
+*{box-sizing:border-box}
+html{scrollbar-width:none;-ms-overflow-style:none}html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
+main{max-width:680px;margin:0 auto;padding:40px 16px 64px}
+header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+header img{width:40px;height:40px}
+header b{font-weight:600}header span{color:var(--muted);font-size:14px;display:block}
+.q{font-size:20px;font-weight:600;margin:0 0 6px}
+.meta{color:var(--muted);font-size:14px;margin:0 0 24px}
+.dec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 28px}
+.dec small{display:block;color:var(--muted);font-size:12px;letter-spacing:.04em;margin-bottom:2px}
+.line{display:grid;grid-template-columns:52px 1fr;gap:12px;padding:8px 0;border-top:1px solid var(--line)}
+.line:first-child{border-top:0}
+.who{font-size:13px;color:var(--muted);padding-top:2px}
+.who.milo{color:var(--milo);font-weight:600}
+.empty{color:var(--muted);text-align:center;padding:80px 0}
+</style></head><body><main id="m"><div class="empty">loading…</div></main>
+<script src="https://unpkg.com/lenis@1.1.13/dist/lenis.min.js"></script>
+<script>
+// Smooth scrolling (Lenis). Skipped for people who prefer reduced motion.
+if (window.Lenis && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const lenis = new Lenis({ lerp: 0.1, smoothWheel: true });
+  const raf = (t) => { lenis.raf(t); requestAnimationFrame(raf); };
+  requestAnimationFrame(raf);
+}
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function decode(h){
+  const b64=h.replace(/-/g,"+").replace(/_/g,"/");
+  const bin=Uint8Array.from(atob(b64+"===".slice((b64.length+3)%4)),c=>c.charCodeAt(0));
+  const stream=new Blob([bin]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return JSON.parse(await new Response(stream).text());
+}
+(async()=>{
+  const m=document.getElementById("m");
+  const h=location.hash.slice(1);
+  if(!h){m.innerHTML='<div class="empty">no transcript in this link</div>';return}
+  let d;try{d=await decode(h)}catch{m.innerHTML='<div class="empty">this link is broken</div>';return}
+  const when=d.at?new Date(d.at).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}).toLowerCase():"";
+  const dec=d.decision?`<div class="dec"><small>decision</small>${esc(d.decision)}${d.by?` <span style="color:var(--muted)">· ${esc(d.by)}</span>`:""}</div>`:"";
+  const lines=(d.lines||[]).map(([w,t])=>`<div class="line"><div class="who ${w==="milo"?"milo":""}">${esc(w)}</div><div>${esc(t)}</div></div>`).join("");
+  m.innerHTML=`<header><img src="/milo.png" alt=""><div><b>milo</b><span>call transcript</span></div></header>
+  <p class="q">${esc((d.q||"").toLowerCase())}</p>
+  <p class="meta">${[d.from&&("asked by "+esc(d.from.toLowerCase())),d.who&&esc(d.who.toLowerCase()),d.secs&&(d.secs+"s"),when].filter(Boolean).join(" · ")}</p>
+  ${dec}<div>${lines||'<div class="empty">no speech was captured</div>'}</div>`;
+  document.title="milo · "+(d.q||"call transcript").toLowerCase();
+})();
+</script></body></html>

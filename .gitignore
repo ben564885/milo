@@ -1,0 +1,10 @@
+.env
+.env.*
+node_modules/
+.DS_Store
+data/
+.playwright-mcp/
+config/people.local.yaml
+config/identities.local.json
+config/identities.json
+!.env.example

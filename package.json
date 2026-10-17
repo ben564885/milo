@@ -1,0 +1,17 @@
+{
+  "name": "milo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "milo": "pnpm --filter @milo/server dev",
+    "owners": "pnpm --filter @milo/owner-agent dev",
+    "mcp": "pnpm --filter @milo/mcp start",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

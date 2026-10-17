@@ -1,0 +1,8 @@
+{
+  "milo": { "handle": "your-milo-handle", "id": "<inkbox identity id>", "email": "your-milo-handle@inkboxmail.com" },
+  "coder": { "handle": "your-milo-handle-coder", "id": "<inkbox identity id>", "email": "your-milo-handle-coder@inkboxmail.com" },
+  "owners": {
+    "ben": { "handle": "milo-ben", "id": "<inkbox identity id>", "email": "milo-ben@inkboxmail.com" }
+  },
+  "slack": { "connectionId": "<inkbox slack connection id>", "channelId": "<slack channel id>" }
+}
