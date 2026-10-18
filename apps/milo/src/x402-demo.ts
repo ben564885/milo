@@ -9,7 +9,7 @@ export function mountX402Demo(app: Hono) {
       scheme: "exact", network, amount, maxTimeoutSeconds: 60,
       asset: network === "eip155:8453" ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" : "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       payTo: process.env.MILO_DEMO_X402_PAY_TO ?? "0x000000000000000000000000000000000000dEaD",
-      extra: { name: "USDC", version: "2" },
+      extra: { name: network === "eip155:8453" ? "USD Coin" : "USDC", version: "2" }, // the token's EIP-712 name on each network
     };
     const paid = c.req.header("payment-signature") ?? c.req.header("x-payment");
     if (!paid) {
