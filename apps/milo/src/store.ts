@@ -62,6 +62,15 @@ export function find(pred: (r: Request) => boolean): Request | undefined {
 
 export function reset() { db.exec("DELETE FROM requests"); }
 
+// Inkbox allows at most three iMessages to someone until they first reply. Remember who has replied.
+db.exec("CREATE TABLE IF NOT EXISTS imessage_replied (phone TEXT PRIMARY KEY, at TEXT)");
+export function markReplied(phone?: string | null) {
+  if (phone) db.prepare("INSERT OR IGNORE INTO imessage_replied (phone, at) VALUES (?, ?)").run(phone, new Date().toISOString());
+}
+export function hasReplied(phone?: string): boolean {
+  return Boolean(phone && db.prepare("SELECT 1 FROM imessage_replied WHERE phone = ?").get(phone));
+}
+
 /** On startup, requests that were mid-escalation can't resume; mark them failed. */
 export function failInterrupted() {
   for (const r of list(50)) {

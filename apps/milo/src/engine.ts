@@ -8,7 +8,7 @@ import { budgetLine, checkApproval, listApprovals, recordPayment, saveApproval, 
 import { changeRole, getRole, roleChangeFrom } from "./roles.ts";
 import { allowed, resolvePeople } from "./people.ts";
 import { clear, emit, waitFor, type Signal } from "./signals.ts";
-import { get, list, save, type Request } from "./store.ts";
+import { get, hasReplied, list, save, type Request } from "./store.ts";
 
 const LISTEN_AFTER = Number(process.env.MILO_LISTEN_AFTER_MS ?? 20 * 60_000);
 const T = {
@@ -225,20 +225,29 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     r.step = "imessage"; save(r);
     // Inkbox blocks links in a first iMessage, and "billing.ts" looks like a domain. Break the dots.
     const noLinks = (s: string) => s.replace(/`/g, "").replace(/\(?[\w./-]*?([\w-]+)\.[a-z]{1,5}\b\)?/gi, "the $1 file").replace(/https?:\S+/g, "");
-    // Two casual texts: "yo", then the question. Before a person's first reply, each must be under 160 characters.
+    // Two casual texts, "yo" then the question, once the person has replied to Milo before. Until then Inkbox allows
+    // only three texts in total (each under 160 characters), so send just the question.
+    const warm = hasReplied(target.phone);
     let q = noLinks(r.payment ? `${r.requester} wants to pay ${r.payment.price} for ${endpointName(r.payment.url)}. ok once, always, or no? (👍 once, ❤️ always)` : asked(r)).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
     if (q.length > 155) q = q.slice(0, 154).trimEnd() + "…";
-    const sent = await ch.imessageSend(target.phone, "yo")
+    const sent = await (warm ? ch.imessageSend(target.phone, "yo") : Promise.resolve())
       .then(() => ch.imessageSend(target.phone!, q))
       .catch(async (e) => {
-        await log(r, "imessage", `couldn't text: ${e.detail?.message ?? e.message}`, false);
+        const limit = /three messages|first reply/i.test(e.detail?.message ?? e.message);
+        await log(r, "imessage", limit ? `can't text ${target.name}: they haven't replied to Milo's number yet, and Inkbox allows only three texts until they do` : `couldn't text: ${e.detail?.message ?? e.message}`, false);
         return undefined;
       });
+    // No text went out: give Slack the text's waiting time too, so a call never comes as the first nudge after a short wait.
+    if (!sent && r.slack?.threadTs) {
+      await log(r, "slack", `waiting ${Math.round(T.imessage / 1000)}s more on slack before calling`);
+      const d = await awaitHuman(r, T.imessage, names, target);
+      if (d) return d;
+    }
     if (sent) {
       r.imessageId = sent.id; r.imessageConversationId = sent.conversationId; save(r);
       if (r.slack?.threadTs) void say(r, `${ch.mention(target)} texted you too`);
-      await log(r, "imessage", `texted ${target.name}: "yo" then "${q}". waiting ${Math.round(T.imessage / 1000)}s`);
+      await log(r, "imessage", `texted ${target.name}: ${warm ? `"yo" then ` : ""}"${q}". waiting ${Math.round(T.imessage / 1000)}s`);
       const d = await awaitHuman(r, T.imessage, names, target);
       if (d) return d;
       await log(r, "imessage", `no answer from ${target.name} over text`, false);
@@ -479,7 +488,8 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
   }
 
   // Close the loop on the text Milo sent: a threaded "taken care of" after a call, or a checkmark after a text answer.
-  if (r.imessageId && r.imessageConversationId && d.outcome !== "no_answer") {
+  // Skip it for someone who never replied: it would use up one of their three texts.
+  if (r.imessageId && r.imessageConversationId && d.outcome !== "no_answer" && hasReplied(people[r.target ?? ""]?.phone ?? target?.phone)) {
     const close = d.source.channel === "call" ? ch.imessageInConversation(r.imessageConversationId, "taken care of over the phone", r.imessageId)
       : d.source.channel === "imessage" ? ch.imessageInConversation(r.imessageConversationId, "✓")
       : undefined;

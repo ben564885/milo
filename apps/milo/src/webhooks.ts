@@ -6,7 +6,7 @@ import { personByPhone, personBySlack, resolvePeople } from "./people.ts";
 import * as ch from "./channels.ts";
 import { roleChangeFrom } from "./roles.ts";
 import { emit } from "./signals.ts";
-import { find } from "./store.ts";
+import { find, markReplied } from "./store.ts";
 
 const seen = new Set<string>();
 
@@ -42,6 +42,7 @@ export async function handleWebhook(raw: string, headers: Record<string, string>
 
   if (type === "imessage.reaction_received" && data.reaction) {
     const x = data.reaction;
+    markReplied(x.remote_number);
     const r = find((r) => r.status === "running" && r.imessageId === x.target_message_id)
       ?? find((r) => r.status === "running" && r.imessageConversationId === x.conversation_id);
     if (r) emit(r.id, { kind: "imessage_tapback", reaction: x.reaction, emoji: x.custom_emoji, from: x.remote_number });
@@ -52,6 +53,7 @@ export async function handleWebhook(raw: string, headers: Record<string, string>
     const m = data.message;
     const from = m.sender_number ?? m.remote_number;
     const person = personByPhone(people, from);
+    markReplied(from);
     const r = find((r) => r.status === "running" && r.imessageConversationId === m.conversation_id)
       ?? find((r) => r.status === "running" && !!person && r.target === person.handle && r.step === "imessage");
     if (r && m.content) emit(r.id, { kind: "imessage_reply", text: m.content, from });
