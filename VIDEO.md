@@ -1,45 +1,77 @@
 # Milo: 1-Minute Demo Video
 
-Goal: in 60 seconds, a judge understands the problem, sees Milo get a real human answer across real channels, and sees Milo remember it. Record by **Sun 8:00 AM**.
+Goal: in about a minute, a judge sees an agent ask permission to pay and ask for a decision, and sees Milo get real human answers across real channels. Record by **Sun 8:00 AM**.
 
 ## The one idea the video must land
 
-> Agents get stuck waiting on humans. Milo gets the answer: it asks your agent first, then Slack, iMessage, and a phone call, and it remembers every answer so it interrupts you less next time.
+> Agents get stuck waiting on humans: for decisions, and for permission to spend money. Milo is the permission layer: approve, deny, or always approve, from Slack, iMessage or a phone call. Most agent payments are fractions of a cent, so "always approve" lets the agent keep working while every payment is logged in Slack.
 
 Everything that does not serve that sentence gets cut.
 
 ---
 
-## Script (60 s)
+## Setup before recording
+
+- `pnpm milo` and `pnpm owners` run in `yc-hack-oct`. `/api/status` on :8787 is ok.
+- A **new** Claude Code chat in `yc-demo-site` (it must have the `paid_fetch` tool).
+- Slack `#milo-demo` open and zoomed. Ben's and Philip's phones on the table, sound on.
+- Payer wallet has test USDC (`pnpm tsx scripts/wallet.ts`). The Lumen API costs $0.01 per call on Base Sepolia.
+- After every rehearsal, reset: `curl -X POST localhost:8787/api/reset`. It clears payment approvals and saved decisions. Without it, Milo pays prompt 1 without asking and answers prompt 2 from memory, so nobody gets a call.
+- Ben is the first contact and the payment approver. `index.html` is owned by Philip (`.github/CODEOWNERS`).
+
+## Prompt 1: the agent wants to pay (answered in Slack)
+
+Prompt in Claude Code: **"add a small live weather line under the hero using our forecast api"**
+
+1. Claude Code calls `paid_fetch` on `https://yc-demo-site.vercel.app/api/forecast`. The API answers **402: $0.01 USDC**.
+2. Milo posts in Slack: claude code wants to pay $0.01 for the weather api, approve once, always approve, or deny?
+3. **Ben replies in the Slack thread: "always approve"**. (Answer within 20 s, before Milo texts.)
+4. Milo pays. Slack thread: paid, who approved it, today's budget, and the **Basescan transaction link**.
+5. Claude Code adds the weather line and deploys. Show the live site.
+6. Optional, 3 seconds: "refresh the weather". Milo pays on the standing approval with no ping; the one daily Slack line goes from "once" to "2 times today". This is the shot that sells always approve.
+
+On-screen labels: "HTTP 402", "x402 / USDC on Base", "Slack", "always approve", "Basescan".
+
+## Prompt 2: the agent needs a decision (group call)
+
+Prompt in Claude Code: a normal site change that leaves a real choice open, e.g. **"make the pricing section stand out more"** (Claude asks one question with three options, per `yc-demo-site/CLAUDE.md`).
+
+1. Claude Code calls `ask_human`. Milo checks memory and asks Philip's agent over A2A (it has no answer).
+2. Slack: "hey @ben, quick one from claude code: …". **Do not answer.**
+3. iMessage on Ben's phone: "yo", then the question. **Do not answer.**
+4. Ben's phone rings: Milo. Ben: **"Philip owns the site, can you add him?"**
+5. Philip's phone rings and he joins the same call. Milo sums it up. **Philip picks an option** (or something else). Say "bye"; Milo hangs up.
+6. Slack thread: the decision, the transcript link and the call recording. iMessage: "taken care of over the phone".
+7. Claude Code applies Philip's choice and deploys. Show the live site.
+
+On-screen labels: "A2A", "Slack", "iMessage", "Phone", "+ guest on the same call", "Contact memory".
+
+## Script (about 75 s, cut to fit)
 
 | Time | Picture | Voice-over / on-screen text |
 |---|---|---|
-| **0:00–0:06** | Black screen, white text, one line at a time. Then a Slack ping sound. | "Your agent is blocked." / "It needs a human." / "The human is busy." |
-| **0:06–0:12** | Screen recording: Claude Code in a terminal. It wants to edit `billing.ts` and calls `ask_human`. | VO: "Claude wants to change billing code. It doesn't guess. It asks Milo." |
-| **0:12–0:20** | Split screen. Left: Slack thread with Milo's live status card ticking: *Checked notes → Asked Daniel's agent → Messaging Ben*. Right: a phone with an iMessage from Milo: "👍 approve / 👎 block". | VO: "Milo asks Daniel's agent first. No answer. It tries Slack. Then iMessage." |
-| **0:20–0:34** | Real phone on a table rings. Caller: **Milo** with the owl avatar. Ben answers on speaker. Subtitles of the call. Ben: "Daniel owns that, get him on." Second phone rings. Daniel: "Don't change it. Use the v2 endpoint." | VO is silent. Let the real call play. Subtitles carry it. |
-| **0:34–0:42** | Back to the screen: Slack card turns green, summary posted. Terminal: `ask_human` returns `{decision: "blocked", instead: "use v2", decided_by: "Daniel"}`. Claude rewrites its plan. | VO: "Decision returned to the agent. Logged in Slack. Saved to memory." |
-| **0:42–0:52** | **Act 2.** Claude asks about `billing.ts` again. Slack status card: *Found Daniel's decision from 2:14 PM*. Card turns green in about 2 seconds. Both phones stay dark. | VO: "Next time, Milo already knows. Nobody's phone rings." |
-| **0:52–1:00** | Owl logo + "Milo" + one line. Small "Built on Inkbox" with the Inkbox logo. Team names. | Text: "Milo: the human response layer for agents." VO: "Built on Inkbox: A2A, Slack, iMessage, Voice AI, contact memory." |
-
-Word count of the voice-over: about 75 words. That fits 60 seconds with room for the real call audio.
+| 0:00–0:05 | Black screen, white text. | "Agents need humans: for decisions, and for money." |
+| 0:05–0:12 | Claude Code: prompt 1, `paid_fetch`, the 402. | "Claude wants to pay one cent for live weather. It can't just pay. It asks Milo." |
+| 0:12–0:22 | Slack: Milo's ask, Ben types "always approve", the paid line with the Basescan link. | "Approve once, always, or deny. Ben says always." |
+| 0:22–0:28 | Basescan transaction, then the live site with the weather line. Optional: refresh, the daily line ticks to 2. | "Real USDC transfer on Base. Next time, it just pays, and logs it." |
+| 0:28–0:35 | Claude Code: prompt 2, `ask_human`. Slack ask, iMessage on the phone, nobody answers. | "Now a design question. Slack, then a text." |
+| 0:35–0:55 | Two phones on the table. Ben picks up, asks to add Philip. Philip joins and decides. Subtitles. | VO silent. Let the call play. |
+| 0:55–1:05 | Slack thread: decision, transcript, recording. iMessage "taken care of over the phone". Site updates. | "The decision goes back to the agent, and Milo remembers it." |
+| 1:05–1:12 | Owl logo, "Milo", "Built on Inkbox". Team names. | "Milo: the permission layer for agents." |
 
 ---
 
 ## Shots to capture (shot list)
 
-1. **Terminal**: Claude Code calling `ask_human`. Large font (18+ pt), dark theme, clean prompt.
-2. **Slack**: the `#milo-demo` channel in the buzzle workspace, Milo's status card updating live. Zoom the window so text is readable on a phone screen.
-3. **iMessage**: a phone screen recording (Control Center → Screen Recording) when Milo's message arrives.
-4. **Phone call, wide shot**: two phones on a table, filmed from above. Ringing screen with "Milo" and the owl avatar must be visible.
-5. **Phone call audio**: put the phones on speaker, record room audio with a third phone or laptop mic close to them. Also keep the Inkbox transcript to build subtitles.
-6. **Return screen**: terminal shows the JSON decision; Slack shows the summary.
-7. **Act 2**: same terminal + Slack, phones in frame and silent.
-8. **End card**: owl logo (`milo-owl-transparent.png`), Inkbox wordmark.
+1. **Terminal**: both prompts, `paid_fetch` and `ask_human` calls. Large font (18+ pt), dark theme.
+2. **Slack**: prompt 1 thread (ask, Ben's reply, paid line with link), prompt 2 thread (ask, texted, calling, decision, transcript, recording).
+3. **Basescan**: the transaction page for prompt 1.
+4. **iMessage**: Ben's phone screen recording when Milo texts.
+5. **Phone call, wide shot**: both phones on a table, "Milo" with the owl avatar on the ringing screen. Room audio close to the phones.
+6. **Live site**: before and after each prompt (https://yc-demo-site.vercel.app).
+7. **End card**: owl logo (`milo-owl-transparent.png`), Inkbox wordmark.
 
-Record each shot separately, several takes. Edit together. Do not try to get the full minute in one take.
-
----
+Record each prompt separately, several takes. Edit together.
 
 ## Three possible formats (choose one)
 
