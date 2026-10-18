@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { adminClient, agentClient, loadIdentities, ROOT, type AskPayload } from "@milo/shared";
 import { BOARD_HTML } from "./board.ts";
 import { attachCallSockets } from "./conference.ts";
-import { availability } from "./channels.ts";
+import { a2aComplete, availability } from "./channels.ts";
 import { newRequest, run, timeouts } from "./engine.ts";
 import { startInbox } from "./inbox.ts";
 import { mountX402Demo } from "./x402-demo.ts";
@@ -81,7 +81,17 @@ app.delete("/api/payments/approvals", (c) => {
 mountX402Demo(app);
 
 // Reset demo state: local requests, payments and approvals, roles (back to the defaults), and Milo decision notes.
+// Close the agent's side of requests that stopped mid-escalation, so its MCP tool stops waiting and can ask again.
+async function closeInterrupted(why: string) {
+  for (const r of failInterrupted(why)) {
+    if (!r.a2aTaskId) continue;
+    const answer = `${why} Nobody answered. Ask again.`;
+    await a2aComplete(r.a2aTaskId, answer, { outcome: "no_answer", answer, requestId: r.id }).catch((e) => console.warn("[a2a] close failed:", e.message));
+  }
+}
+
 app.post("/api/reset", async (c) => {
+  await closeInterrupted("Milo was reset during this request.");
   reset();
   resetApprovals();
   resetRoles();
@@ -103,7 +113,7 @@ app.post("/hooks/inkbox", async (c) => {
 
 const server = serve({ fetch: app.fetch, port: PORT }, () => console.log(`🦉 Milo on http://localhost:${PORT}`));
 attachCallSockets(server as any);
-failInterrupted();
+void closeInterrupted("Milo restarted during this request.");
 startInbox();
 
 if (process.env.MILO_TUNNEL !== "0") {

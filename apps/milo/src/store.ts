@@ -73,11 +73,14 @@ export function hasReplied(phone?: string): boolean {
 }
 
 /** On startup, requests that were mid-escalation can't resume; mark them failed. */
-export function failInterrupted() {
+export function failInterrupted(why = "Milo restarted during this request."): Request[] {
+  const failed: Request[] = [];
   for (const r of list(50)) {
     if (r.status !== "running") continue;
     r.status = "failed";
-    r.log.push({ at: new Date().toISOString(), step: "info", text: "Milo restarted during this request.", ok: false });
+    r.log.push({ at: new Date().toISOString(), step: "info", text: why, ok: false });
     save(r);
+    failed.push(r);
   }
+  return failed;
 }
