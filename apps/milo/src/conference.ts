@@ -34,6 +34,8 @@ export function setFakeDial(fn?: (conf: string, leg: string) => void) { fakeDial
 export type BridgeInput = {
   question: string;
   options?: string[];
+  /** Someone on the call changed who Milo asks first or who approves payments. Returns what to tell them. */
+  onChangeRole?: (role: "first_contact" | "payment_approver", name: string, changedBy: string) => Promise<string>;
   context: string;
   requester: string;
   shortName: string; // "the billing code"
@@ -337,6 +339,13 @@ class Conference {
       this.input.onEvent(`${this.decision.decidedBy ?? "they"} decided: ${this.decision.answer}`);
       return "Recorded.";
     }
+    if (name === "change_contact") {
+      if (!this.input.onChangeRole) return "That can't be changed from this call.";
+      const role = args.role === "payment_approver" ? "payment_approver" : "first_contact";
+      const text = await this.input.onChangeRole(role, String(args.name ?? ""), String(args.changed_by || this.input.target.name));
+      this.input.onEvent(text);
+      return `${text}. Confirm it in one short sentence, then continue with the question.`;
+    }
     if (name === "end_call") {
       this.ending = true;
       return "Ending.";
@@ -366,6 +375,7 @@ class Conference {
       `If someone says another person decides or asks you to bring someone in, call add_guest with that person's name. People you can add: ${this.roster().map((p) => p.name).join(", ") || "nobody"}.${awayNames.length ? ` ${awayNames.join(" and ")} cannot be reached right now.` : ""}`,
       `When a new person joins, greet them by name, give a two-sentence summary, and ask them for the decision.`,
       `As soon as someone clearly decides (yes, no, or do something else instead), call record_decision right away without saying anything first. The call then wraps up automatically. Never narrate what you are about to do (no "let me confirm").`,
+      `If someone says that from now on a different person should be asked first, or should approve payments, call change_contact. That is a lasting change, not the answer to this question. If they also want that person to decide this question, add them with add_guest.`,
       `If the people on the call ask you to explain or repeat, do it right away. Never stay silent when someone talks to you.`,
     ].filter(Boolean).join("\n");
   }
@@ -390,6 +400,19 @@ const TOOLS = [
         choice: { type: "string", description: "For a choice question: the option they picked, exactly as listed. Otherwise empty." },
       },
       required: ["outcome", "answer", "decided_by"],
+    },
+  },
+  {
+    type: "function", name: "change_contact",
+    description: "Change, from now on, who Milo asks first about questions (first_contact) or who approves agent payments (payment_approver).",
+    parameters: {
+      type: "object",
+      properties: {
+        role: { type: "string", enum: ["first_contact", "payment_approver"] },
+        name: { type: "string", description: "First name of the new person" },
+        changed_by: { type: "string", description: "First name of the person asking for the change" },
+      },
+      required: ["role", "name"],
     },
   },
   { type: "function", name: "end_call", description: "Hang up for everyone after the decision is confirmed and you said bye.", parameters: { type: "object", properties: {}, required: [] } },

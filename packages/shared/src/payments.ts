@@ -3,6 +3,19 @@ import type { Decision } from "./types.ts";
 /** The choices a person gets for a payment question. */
 export const PAY_OPTIONS = ["approve once", "always approve", "deny"];
 
+/** Daily budget for payments made on a standing approval, per endpoint, in USD. */
+export const PAY_DAILY_USD = Number(process.env.MILO_PAY_DAILY_USD ?? 5);
+
+/** Networks the wallet may pay on. Base Sepolia (testnet) only, unless MILO_PAY_NETWORKS says otherwise. */
+export const PAY_NETWORKS = (process.env.MILO_PAY_NETWORKS ?? "eip155:84532").split(",").map((s) => s.trim()).filter(Boolean);
+
+/** A block-explorer link for a settled payment. */
+export function txLink(network: string, tx?: string): string | undefined {
+  if (!tx || !/^0x[0-9a-f]{64}$/i.test(tx)) return undefined;
+  const base = network === "eip155:8453" ? "https://basescan.org" : network === "eip155:84532" ? "https://sepolia.basescan.org" : undefined;
+  return base && `${base}/tx/${tx}`;
+}
+
 /** What an approval is keyed on: method + origin + path. The query string is left out, so ?city=sf and ?city=nyc are one endpoint. */
 export function endpointKey(method: string, url: string): string {
   const u = new URL(url);

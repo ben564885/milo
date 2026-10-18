@@ -12,7 +12,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { wrapFetchWithPayment, decodePaymentResponseHeader, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { agentClient, endpointKey, endpointName, formatPrice, loadIdentities, usdValue, loadPeople, type PaymentAsk } from "@milo/shared";
+import { agentClient, endpointKey, endpointName, formatPrice, loadIdentities, PAY_NETWORKS, usdValue, loadPeople, type PaymentAsk } from "@milo/shared";
 
 const ids = loadIdentities();
 const WAIT_MS = Number(process.env.MILO_MCP_WAIT_MS ?? 4 * 60_000);
@@ -101,7 +101,8 @@ Call ask_human BEFORE you:
 Ask one short, concrete question and pass the file path. For a choice (for example a color), pass the options and use the decision's choice field. Do not ask for things you can find out yourself.
 While you wait, do not make the change. If ask_human returns "still waiting", call check_human_answer with the task_id.
 Follow the decision exactly: approved = proceed; blocked = don't; redirect = do the "instead" action. Mention who decided in your reply.
-To call an HTTP API that may charge you (HTTP 402 / x402), use paid_fetch instead of curl or fetch. It asks a human the first time you pay an endpoint (approve once, always approve, or deny) and pays only if approved. Never pay a 402 any other way.`;
+To call an HTTP API that may charge you (HTTP 402 / x402), use paid_fetch instead of curl or fetch. It asks a human the first time you pay an endpoint (approve once, always approve, or deny) and pays only if approved. Never pay a 402 any other way.
+If the user asks to change who Milo asks first, or who approves payments, call set_milo_contact.`;
 
 const server = new McpServer({ name: "milo", version: "0.2.0" }, { instructions: INSTRUCTIONS });
 
@@ -143,12 +144,42 @@ server.registerTool(
 );
 
 // ---------- x402 payments ----------
-// The wallet that pays. Without X402_PRIVATE_KEY, a throwaway unfunded wallet is used: fine for the local demo endpoint, real sellers will reject it.
+// The wallet that pays: a Base Sepolia (testnet) key from scripts/wallet.ts. Without X402_PRIVATE_KEY, a throwaway
+// unfunded wallet is used: fine for the local demo endpoint, real sellers will reject it.
 const PAY_KEY = (process.env.X402_PRIVATE_KEY as `0x${string}` | undefined) || generatePrivateKey();
 const wallet = privateKeyToAccount(PAY_KEY);
 const PAY_MAX = process.env.MILO_PAY_MAX_USD ?? "1"; // hard cap per payment, in USD, even when a human approves
 /** Payment questions still waiting on a person, so calling paid_fetch again keeps waiting instead of asking twice. */
 const pendingPay = new Map<string, string>();
+
+async function sendReceipt(r: { requestId?: string; endpoint: string; status: "paid" | "failed"; httpStatus: number; transaction?: string; payer: string }) {
+  try {
+    const { client, target } = await a2a();
+    await client.send(target, { text: JSON.stringify({ kind: "payment_receipt", ...r }) });
+  } catch (e) {
+    console.error("[mcp] receipt not sent:", (e as Error).message);
+  }
+}
+
+server.registerTool(
+  "set_milo_contact",
+  {
+    title: "Change who Milo asks",
+    description: "Change, from now on, who Milo asks first about questions (first_contact) or who approves agent payments (payment_approver). Both default to Ben. Use it when the user asks for this. Leave person empty to see the current settings.",
+    inputSchema: {
+      role: z.enum(["first_contact", "payment_approver"]),
+      person: z.string().optional().describe("First name of the new person, e.g. Philip."),
+      changed_by: z.string().optional().describe("Who asked for the change, if you know."),
+    },
+  },
+  async (args) => {
+    const { client, target } = await a2a();
+    const sent: any = await client.send(target, { text: JSON.stringify({ kind: "set_role", role: args.role, person: args.person, requester: args.changed_by ?? "the user (via Claude Code)", via: "claude code" }) });
+    const s = await waitFor(sent.task?.id ?? sent.id, 30_000);
+    const roles = (s.decision as any)?.roles as { role: string; handle: string }[] | undefined;
+    return { content: [{ type: "text" as const, text: [s.progress.at(-1) ?? (s.state === "completed" ? "Done." : `Milo hasn't answered yet (state: ${s.state}). Is pnpm milo running?`), roles ? `Now: ${roles.map((r) => `${r.role} = ${r.handle}`).join(", ")}` : ""].filter(Boolean).join("\n") }] };
+  },
+);
 
 server.registerTool(
   "paid_fetch",
@@ -172,7 +203,7 @@ server.registerTool(
     let stillWaiting: string | undefined;
     let refused: string | undefined;
     const client = new x402Client()
-      .register("eip155:*", new ExactEvmScheme(wallet))
+      .register((PAY_NETWORKS[0] ?? "eip155:84532") as `${string}:${string}`, new ExactEvmScheme(wallet))
       .setSpendControls({ maxAmountPerPayment: `$${PAY_MAX}` })
       .onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements: req }) => {
         // The client may retry inside one call; the decision already made covers that retry.
@@ -206,12 +237,15 @@ server.registerTool(
         if (decision.scope !== "once" && decision.scope !== "always") return { abort: true, reason: decision.answer ?? "not approved" };
       });
 
+    for (const n of PAY_NETWORKS.slice(1)) client.register(n as `${string}:${string}`, new ExactEvmScheme(wallet));
+
     const lines: string[] = [];
     let res: Response;
     try {
       res = await wrapFetchWithPayment(fetch, client)(args.url, { method, headers: args.headers, body: args.body });
     } catch (e) {
       const msg = (e as Error).message;
+      if (/No (network|scheme)|not supported|no.*matching/i.test(msg)) refused ??= `the seller only takes networks this wallet doesn't pay on (allowed: ${PAY_NETWORKS.join(", ")}, set MILO_PAY_NETWORKS)`;
       if (/spendControls/.test(msg)) refused ??= `it costs more than the $${PAY_MAX} per-call cap (MILO_PAY_MAX_USD) or wants a token other than USDC`;
       if (refused) lines.push(`Not paid, and no human was asked: ${refused}.`);
       else if (stillWaiting) lines.push(`Still waiting for a human to approve paying ${ask?.price} for ${endpoint}. Call paid_fetch again with the same url and method to keep waiting. Do not pay any other way.`, `task_id: ${stillWaiting}`);
@@ -227,6 +261,9 @@ server.registerTool(
       const how = decision.scope === "always"
         ? (decision.source?.channel === "memory" ? `standing approval from ${decision.decidedBy ?? "a human"}` : `${decision.decidedBy ?? "a human"} approved this endpoint from now on`)
         : `${decision.decidedBy ?? "a human"} approved this one call`;
+      // Tell Milo what happened, so every payment is logged, counted against the budget, and posted to Slack.
+      const tx = (receipt as any)?.transaction;
+      await sendReceipt({ requestId: decision.requestId, endpoint, status: res.ok ? "paid" : "failed", httpStatus: res.status, transaction: typeof tx === "string" ? tx : undefined, payer: wallet.address });
       lines.push(res.status === 402 ? `Payment of ${ask.price} was approved (${how}) but the seller still answered 402. ${PAY_KEY === process.env.X402_PRIVATE_KEY ? "Check the wallet balance." : "No X402_PRIVATE_KEY is set, so a throwaway unfunded wallet was used."}` : `Paid ${ask.price} for ${endpoint} (${how}).`);
       if (receipt) lines.push(`Receipt: ${JSON.stringify(receipt)}`);
     } else {

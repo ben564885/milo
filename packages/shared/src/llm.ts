@@ -84,3 +84,32 @@ export async function callBrief(input: { person: string; requester: string; ques
   if (out) return out.brief;
   return `${input.requester} is blocked and asks: ${input.question}${input.context ? ` Context: ${input.context.slice(0, 300)}` : ""}`;
 }
+
+export type Role = "first_contact" | "payment_approver";
+export const ROLE_LABEL: Record<Role, string> = { first_contact: "first contact", payment_approver: "payment approver" };
+
+// Cheap gate before asking the model: the text must talk about a role and about changing it.
+const ROLE_WORDS = /\b(first contact|first person|point person|go-?to|ask first|approv\w*|payments?|spend\w*|purchases?|budget)\b/i;
+const CHANGE_WORDS = /\b(from now on|going forward|in the future|default|instead of me|make|set|change|switch|handles?|owns?|be the|takes? over|in charge)\b/i;
+
+/**
+ * Is someone changing, for good, who Milo asks first or who approves payments?
+ * "ask Philip" about one question is a redirect, not a change.
+ */
+export async function extractRoleChange(text: string, people: string[]): Promise<{ role: Role; person: string } | undefined> {
+  if (!ROLE_WORDS.test(text) || !CHANGE_WORDS.test(text)) return undefined;
+  const out = await json<{ role: Role | "none"; person: string }>(
+    "Milo is an assistant that asks a team's humans for decisions. It has two standing settings: first_contact (the person Milo asks first about any question) and payment_approver (the person who approves an agent's payments to paid APIs). Decide if this message changes one of them from now on, and to whom. \"Ask Philip\" or \"Philip owns this\" about one question is NOT a change: return none. \"From now on ask Philip first\" or \"make Philip the first contact\" = first_contact. \"Philip approves payments from now on\" or \"send spending to Philip\" = payment_approver. If it is not a lasting change, or names nobody from the list, return none.",
+    `People: ${people.join(", ")}\n\nMessage:\n${text}`,
+    { type: "object", additionalProperties: false, required: ["role", "person"], properties: { role: { type: "string", enum: ["first_contact", "payment_approver", "none"] }, person: { type: "string", description: "First name from the list, or empty." } } },
+  );
+  if (out) return out.role !== "none" && people.some((p) => p.toLowerCase() === out.person.toLowerCase()) ? { role: out.role, person: out.person } : undefined;
+  return heuristicRoleChange(text, people);
+}
+
+export function heuristicRoleChange(text: string, people: string[]): { role: Role; person: string } | undefined {
+  if (!ROLE_WORDS.test(text) || !/\b(from now on|going forward|in the future|default|make|set|change|switch|takes? over|in charge)\b/i.test(text)) return undefined;
+  const person = people.find((p) => new RegExp(`\\b${p}\\b`, "i").test(text));
+  if (!person) return undefined;
+  return { role: /pay|spend|approv|purchas|budget/i.test(text) ? "payment_approver" : "first_contact", person };
+}

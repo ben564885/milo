@@ -1,5 +1,7 @@
 import { agentClient, loadIdentities } from "@milo/shared";
-import { newRequest, run } from "./engine.ts";
+import * as ch from "./channels.ts";
+import { newRequest, reportPayment, run } from "./engine.ts";
+import { changeRole, listRoles } from "./roles.ts";
 
 const handled = new Set<string>();
 
@@ -32,6 +34,17 @@ export function startInbox() {
         const dataPart = first?.parts?.find((p: any) => p.data)?.data;
         const ask = { ...parseAsk(textPart), ...(dataPart ?? {}) };
         const requester = t.requesterHandle ?? t.caller?.handle ?? "an agent";
+        // Not questions: a payment receipt, or a change to who Milo asks. Answer right away.
+        if (ask.kind === "payment_receipt") {
+          const text = await reportPayment(ask);
+          await ch.a2aComplete(t.id, text, { ok: true });
+          continue;
+        }
+        if (ask.kind === "set_role") {
+          const res = ask.person ? await changeRole(ask.role, ask.person, ask.requester ?? `@${requester}`, ask.via ?? "a2a") : { ok: true, text: "No change." };
+          await ch.a2aComplete(t.id, res.text, { ok: res.ok, roles: listRoles() });
+          continue;
+        }
         const req = newRequest({ ...ask, requester: ask.requester ?? `@${requester}`, a2aTaskId: t.id });
         console.log(`[inbox] task ${t.id} from @${requester} → request ${req.id}`);
         run(req).catch((e) => console.error("[inbox] run failed", e));

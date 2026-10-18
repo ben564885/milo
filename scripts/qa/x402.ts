@@ -1,14 +1,20 @@
 // Offline checks for x402 payments: helpers, standing approvals, and a real x402 round trip against the demo endpoint.
 // No humans are contacted. Run: npx tsx scripts/qa/x402.ts
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+process.env.MILO_DB = join(mkdtempSync(join(tmpdir(), "milo-qa-")), "milo.db"); // never touch the real data/milo.db
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { wrapFetchWithPayment, decodePaymentResponseHeader, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { endpointKey, endpointName, formatPrice, paymentScope, usdValue } from "../../packages/shared/src/index.ts";
-import { checkApproval, revokeApproval, saveApproval } from "../../apps/milo/src/payments.ts";
-import { mountX402Demo } from "../../apps/milo/src/x402-demo.ts";
+import { endpointKey, endpointName, formatPrice, heuristicRoleChange, paymentScope, txLink, usdValue } from "../../packages/shared/src/index.ts";
+// Imported after MILO_DB is set, so they open the temp database.
+const { checkApproval, recordPayment, revokeApproval, saveApproval, spentToday } = await import("../../apps/milo/src/payments.ts");
+const { changeRole, getRole } = await import("../../apps/milo/src/roles.ts");
+const { mountX402Demo } = await import("../../apps/milo/src/x402-demo.ts");
 
 let pass = 0;
 const t = async (name: string, fn: () => unknown) => { try { await fn(); pass++; console.log("✓", name); } catch (e) { console.log("✗", name, (e as Error).message); process.exitCode = 1; } };
@@ -34,6 +40,34 @@ await t("approval does not cover a higher price", () => assert.equal(checkApprov
 await t("approval does not cover a new recipient", () => assert.equal(checkApproval({ ...base, payTo: "0xC" })?.covered, false));
 await t("approval does not cover another network", () => assert.equal(checkApproval({ ...base, network: "eip155:8453" })?.covered, false));
 await t("no approval for another endpoint", () => assert.equal(checkApproval({ ...base, endpoint: "POST https://qa.invalid/weather" }), undefined));
+await t("txLink: sepolia explorer", () => assert.equal(txLink("eip155:84532", "0x" + "a".repeat(64)), `https://sepolia.basescan.org/tx/0x${"a".repeat(64)}`));
+await t("txLink: demo tx has no link", () => assert.equal(txLink("eip155:84532", "0xdemo"), undefined));
+
+// Daily budget ($5 by default) on standing approvals.
+const usdc = { ...base, endpoint: "GET https://qa.invalid/budget", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", amount: "1000000", price: "$1.00 USDC" };
+const approvedAt = new Date(Date.now() - 1000).toISOString();
+saveApproval({ ...usdc, approvedBy: "QA", at: approvedAt, requestId: "qa" });
+for (let i = 0; i < 4; i++) recordPayment({ ...usdc, status: "paid", auto: true, at: new Date().toISOString() });
+recordPayment({ ...usdc, status: "failed", auto: true, at: new Date().toISOString() });
+recordPayment({ ...usdc, status: "paid", auto: false, at: new Date().toISOString() });
+await t("budget: counts only paid auto payments", () => assert.equal(spentToday({ ...usdc, at: approvedAt, requestId: "qa" }), 4_000_000n));
+await t("budget: $4 spent + $1 fits in $5", () => assert.equal(checkApproval(usdc)?.covered, true));
+recordPayment({ ...usdc, status: "paid", auto: true, at: new Date().toISOString() });
+await t("budget: $5 spent + $1 asks again", () => { const c = checkApproval(usdc); assert.equal(c?.covered, false); assert.match((c as any).changed, /budget/); });
+saveApproval({ ...usdc, approvedBy: "QA", at: new Date(Date.now() + 1000).toISOString(), requestId: "qa2" });
+await t("budget: a fresh always-approve starts a fresh budget", () => assert.equal(checkApproval(usdc)?.covered, true));
+
+// Who Milo asks.
+await t("roles: both default to ben", () => { assert.equal(getRole("first_contact").handle, "ben"); assert.equal(getRole("payment_approver").handle, "ben"); });
+await t("roles: anyone can change the payment approver", async () => { const r = await changeRole("payment_approver", "Philip", "Ben", "the phone"); assert.equal(r.ok, true); assert.equal(getRole("payment_approver").handle, "philip"); assert.equal(getRole("first_contact").handle, "ben"); });
+await t("roles: change first contact", async () => { await changeRole("first_contact", "daniel", "Philip", "slack"); assert.equal(getRole("first_contact").handle, "daniel"); assert.equal(getRole("first_contact").changedBy, "Philip"); });
+await t("roles: unknown person is refused", async () => { const r = await changeRole("first_contact", "Zed", "Ben", "slack"); assert.equal(r.ok, false); assert.equal(getRole("first_contact").handle, "daniel"); });
+const team = ["Ben", "Daniel", "Philip"];
+await t("role text: payments from now on", () => assert.deepEqual(heuristicRoleChange("from now on philip approves payments", team), { role: "payment_approver", person: "Philip" }));
+await t("role text: make X the first contact", () => assert.deepEqual(heuristicRoleChange("milo, make daniel the first contact", team), { role: "first_contact", person: "Daniel" }));
+await t("role text: 'ask philip' is not a change", () => assert.equal(heuristicRoleChange("not sure, ask philip", team), undefined));
+await t("role text: a payment answer is not a change", () => assert.equal(heuristicRoleChange("always approve", team), undefined));
+
 await t("revoke removes it", () => { assert.equal(revokeApproval(base.endpoint), true); assert.equal(checkApproval(base), undefined); });
 
 // Real x402 v2 round trip: 402 → hook → signed payment header → 200 with receipt.

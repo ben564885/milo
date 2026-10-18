@@ -26,6 +26,7 @@ export type Request = {
   replied?: boolean;
   options?: string[];
   payment?: PaymentAsk;
+  payNote?: string; // why a payment is asked again, e.g. the price went up
   listening?: boolean;
   superseded?: boolean;
   call?: { transcript: string; recordingPath?: string; seconds: number; joined: string[] };
@@ -33,7 +34,7 @@ export type Request = {
 };
 
 mkdirSync(join(ROOT, "data"), { recursive: true });
-export const db = new DatabaseSync(join(ROOT, "data/milo.db"));
+export const db = new DatabaseSync(process.env.MILO_DB ?? join(ROOT, "data/milo.db"));
 db.exec("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, created_at TEXT, json TEXT)");
 
 const listeners = new Set<(r: Request) => void>();

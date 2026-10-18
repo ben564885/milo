@@ -22,9 +22,13 @@ main{max-width:900px;margin:0 auto;padding:0 16px 40px;display:grid;gap:16px}
 const I={lookup:"🗂️",owner_agent:"🤖",slack:"💬",imessage:"📱",call:"📞",done:"✅"};
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 async function load(){
-  let rs=[],ap=[];try{rs=await (await fetch("/api/requests")).json();ap=await (await fetch("/api/payments/approvals")).json()}catch{}
-  if(!rs.length&&!ap.length)return;
-  const pay=ap.length?'<div class="card"><div class="q">Always-approved endpoints</div>'+ap.map(a=>'<div class="step"><span class="i">💳</span><span>'+esc(a.endpoint)+' · up to '+esc(a.price)+' · by '+esc(a.approvedBy||"someone")+'</span></div>').join("")+'</div>':'';
+  let rs=[],ap=[],ps=[],ro=[];try{[rs,ap,ps,ro]=await Promise.all(["/api/requests","/api/payments/approvals","/api/payments","/api/roles"].map(u=>fetch(u).then(r=>r.json())))}catch{}
+  if(!rs.length&&!ap.length&&!ps.length)return;
+  const who=ro.map(r=>(r.role==="first_contact"?"asks first: ":"approves payments: ")+'<b>'+esc(r.handle)+'</b>'+(r.changedBy?' (set by '+esc(r.changedBy)+' via '+esc(r.via)+')':'')).join(" · ");
+  const row=(i,t)=>'<div class="step"><span class="i">'+i+'</span><span>'+t+'</span></div>';
+  const pay=(ap.length||ps.length)?'<div class="card"><div class="q">Payments</div><div class="meta">'+who+'</div>'
+    +ap.map(a=>row("✅",'always approved: '+esc(a.endpoint)+' · up to '+esc(a.price)+' · by '+esc(a.approvedBy||"someone"))).join("")
+    +ps.slice(0,5).map(p=>row(p.status==="paid"?"💳":"⚠️",esc(p.price)+' · '+esc(p.endpoint)+(p.auto?' · auto':'')+' · '+new Date(p.at).toLocaleTimeString())).join("")+'</div>':'';
   document.getElementById("m").innerHTML=pay+rs.slice(0,4).map(r=>{
     const steps=r.log.filter(l=>l.step!=="info").map(l=>'<div class="step '+(l.ok===false?"bad":"")+'"><span class="i">'+(l.ok===false?"✗":I[l.step]||"•")+'</span><span>'+esc(l.text)+'</span></div>').join("");
     const d=r.decision;
