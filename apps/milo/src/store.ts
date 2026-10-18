@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, type Decision, type Step, type Urgency } from "@milo/shared";
+import { ROOT, type Decision, type PaymentAsk, type Step, type Urgency } from "@milo/shared";
 
 export type LogLine = { at: string; step: Step | "done" | "info"; text: string; ok?: boolean };
 
@@ -26,6 +26,9 @@ export type Request = {
   replied?: boolean;
   lastReply?: string;
   options?: string[];
+  payment?: PaymentAsk;
+  payNote?: string; // why a payment is asked again, e.g. the price went up
+  heard?: string; // what the person said that the decision came from (checked for payments)
   listening?: boolean;
   superseded?: boolean;
   call?: { transcript: string; recordingPath?: string; seconds: number; joined: string[] };
@@ -33,7 +36,7 @@ export type Request = {
 };
 
 mkdirSync(join(ROOT, "data"), { recursive: true });
-const db = new DatabaseSync(join(ROOT, "data/milo.db"));
+export const db = new DatabaseSync(process.env.MILO_DB ?? join(ROOT, "data/milo.db"));
 db.exec("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, created_at TEXT, json TEXT)");
 
 const listeners = new Set<(r: Request) => void>();
@@ -59,6 +62,15 @@ export function find(pred: (r: Request) => boolean): Request | undefined {
 }
 
 export function reset() { db.exec("DELETE FROM requests"); }
+
+// Inkbox allows at most three iMessages to someone until they first reply. Remember who has replied.
+db.exec("CREATE TABLE IF NOT EXISTS imessage_replied (phone TEXT PRIMARY KEY, at TEXT)");
+export function markReplied(phone?: string | null) {
+  if (phone) db.prepare("INSERT OR IGNORE INTO imessage_replied (phone, at) VALUES (?, ?)").run(phone, new Date().toISOString());
+}
+export function hasReplied(phone?: string): boolean {
+  return Boolean(phone && db.prepare("SELECT 1 FROM imessage_replied WHERE phone = ?").get(phone));
+}
 
 /** On startup, requests that were mid-escalation can't resume; mark them failed. */
 export function failInterrupted() {

@@ -1,10 +1,11 @@
 /**
  * QA: full bridged call with two simulated phones and generated speech.
  * Ben says to add Philip; Philip decides. Milo must add Philip, hear him, and record the decision.
+ * QA_PAY=1: a payment question. Ben says "always approve"; the transcript must back that up (heardScope = always).
  */
 import { createServer } from "node:http";
 import WebSocket from "ws";
-import { loadPeople } from "@milo/shared";
+import { heardScope, loadPeople, PAY_OPTIONS } from "@milo/shared";
 import { attachCallSockets, runConference, setFakeDial } from "./conference.ts";
 import { encode, FRAME, SILENCE } from "./g711.ts";
 
@@ -25,7 +26,8 @@ const server = createServer();
 attachCallSockets(server);
 server.listen(PORT);
 
-const lines: Record<string, string> = {
+const PAY = Boolean(process.env.QA_PAY);
+const lines: Record<string, string> = PAY ? { ben: "Yeah, always approve that one." } : {
   ben: "Hmm, I'm not sure about that. Philip owns the billing stuff. Can you add Philip to the call?",
   philip: "Hey. No, don't change it. Use the v2 refunds endpoint instead.",
 };
@@ -65,8 +67,9 @@ const people = loadPeople();
 const t0 = Date.now();
 const res = await Promise.race([
   runConference({
-    question: "Can I change the refund logic in billing.ts to call the legacy v1 charge endpoint?",
-    context: "Refunds fail on v2 for old charges; v1 still works.",
+    ...(PAY
+      ? { question: "Can Claude Code pay $0.01 USDC to use the weather api on lumen?", options: PAY_OPTIONS, context: "It needs current weather for the landing page." }
+      : { question: "Can I change the refund logic in billing.ts to call the legacy v1 charge endpoint?", context: "Refunds fail on v2 for old charges; v1 still works." }),
     requester: "Claude Code", shortName: "the billing code", target: people.ben, people, away: ["daniel"],
     onEvent: (t) => console.log(`  • ${t}`),
   }),
@@ -74,4 +77,8 @@ const res = await Promise.race([
 ]);
 console.log(`\nRESULT after ${Math.round((Date.now() - t0) / 1000)}s:`, JSON.stringify((res as any).decision ?? res, null, 1));
 console.log("\nTRANSCRIPT:\n" + ((res as any).transcript ?? ""));
+if (PAY) {
+  const heard = heardScope(((res as any).transcript ?? "").split("\n").filter((l: string) => l.startsWith("them:")).join("\n"));
+  console.log(heard === "always" ? "\nPASS: transcript backs \"always approve\"" : `\nFAIL: transcript check heard ${heard}`);
+}
 process.exit(0);

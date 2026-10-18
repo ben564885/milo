@@ -17,6 +17,7 @@ import { decode, FRAME, mix, SILENCE } from "./g711.ts";
 
 const RT_MODEL = process.env.MILO_RT_MODEL ?? "gpt-realtime-2.1";
 const RT_VOICE = process.env.MILO_RT_VOICE ?? "cedar";
+const TRANSCRIBE_MODEL = process.env.MILO_RT_TRANSCRIBE ?? "gpt-4o-transcribe";
 const TICK_MS = 20;
 const MAX_BUFFERED_FRAMES = 25; // drop inbound audio older than ~0.5 s
 
@@ -34,6 +35,8 @@ export function setFakeDial(fn?: (conf: string, leg: string) => void) { fakeDial
 export type BridgeInput = {
   question: string;
   options?: string[];
+  /** Someone on the call changed who Milo asks first or who approves payments. Returns what to tell them. */
+  onChangeRole?: (role: "first_contact" | "payment_approver", name: string, changedBy: string) => Promise<string>;
   context: string;
   requester: string;
   shortName: string; // "the billing code"
@@ -51,6 +54,8 @@ class Conference {
   aiOut = Buffer.alloc(0);
   aiInBatch: Buffer[] = [];
   transcript: string[] = [];
+  /** Speech turns the transcriber has not returned yet. The call waits for them before it ends, so the last words are kept. */
+  pendingSpeech = new Set<string>();
   decision?: BridgeDecision;
   ending = false;
   responding = false;
@@ -81,12 +86,14 @@ class Conference {
     return this.result;
   }
 
-  finish() {
+  async finish() {
     if (!conferences.has(this.id)) return;
     conferences.delete(this.id);
     clearInterval(this.ticker);
     for (const t of this.timers) clearTimeout(t);
     for (const leg of this.legs.values()) this.hangUp(leg);
+    // The transcript of the last thing said often arrives after the hangup. A payment check reads it, so wait for it.
+    for (let i = 0; i < 40 && this.pendingSpeech.size; i++) await new Promise((res) => setTimeout(res, 100));
     try { this.ai?.close(); } catch {}
     const joined = [...this.legs.values()].filter((l) => l.spoke || l.live || l.streamId).map((l) => l.person.name);
     const connected = [...this.legs.values()].some((l) => l.spoke);
@@ -251,7 +258,7 @@ class Conference {
             instructions: this.instructions(),
             output_modalities: ["audio"],
             audio: {
-              input: { format: { type: "audio/pcmu" }, turn_detection: { type: "server_vad", silence_duration_ms: 500 }, transcription: { model: "gpt-4o-mini-transcribe" } },
+              input: { format: { type: "audio/pcmu" }, turn_detection: { type: "server_vad", silence_duration_ms: 500 }, transcription: { model: TRANSCRIBE_MODEL, language: "en", prompt: this.transcribePrompt() } },
               output: { format: { type: "audio/pcmu" }, voice: RT_VOICE },
             },
             tools: TOOLS,
@@ -284,7 +291,14 @@ class Conference {
         this.aiOut = Buffer.alloc(0); // someone talked over Milo: stop playing
         for (const l of this.legs.values()) if (l.live) l.spoke = true;
         break;
+      case "input_audio_buffer.committed":
+        if (e.item_id) this.pendingSpeech.add(e.item_id);
+        break;
+      case "conversation.item.input_audio_transcription.failed":
+        this.pendingSpeech.delete(e.item_id);
+        break;
       case "conversation.item.input_audio_transcription.completed":
+        this.pendingSpeech.delete(e.item_id);
         if (e.transcript?.trim()) this.transcript.push(`them: ${e.transcript.trim()}`);
         break;
       case "response.output_audio_transcript.done":
@@ -337,6 +351,13 @@ class Conference {
       this.input.onEvent(`${this.decision.decidedBy ?? "they"} decided: ${this.decision.answer}`);
       return "Recorded.";
     }
+    if (name === "change_contact") {
+      if (!this.input.onChangeRole) return "That can't be changed from this call.";
+      const role = args.role === "payment_approver" ? "payment_approver" : "first_contact";
+      const text = await this.input.onChangeRole(role, String(args.name ?? ""), String(args.changed_by || this.input.target.name));
+      this.input.onEvent(text);
+      return `${text}. Confirm it in one short sentence, then continue with the question.`;
+    }
     if (name === "end_call") {
       this.ending = true;
       return "Ending.";
@@ -346,6 +367,12 @@ class Conference {
 
   roster() {
     return Object.values(this.input.people).filter((p) => p.handle !== this.input.target.handle && p.phone && !this.input.away.includes(p.handle));
+  }
+
+  /** Words the transcriber should expect, so short answers on a noisy phone line come out right. */
+  transcribePrompt() {
+    const names = Object.values(this.input.people).map((p) => p.name).join(", ");
+    return [`A phone call about a decision. People: ${names}, Milo.`, this.input.options?.length ? `Possible answers: ${this.input.options.join(", ")}, yes, no.` : "Short answers like yes, no, go ahead."].join(" ");
   }
 
   instructions() {
@@ -358,6 +385,7 @@ class Conference {
       `You are Milo, a friendly, brisk teammate on a phone call. You get quick decisions from people for blocked coding agents. ${requester} is blocked and needs a decision.`,
       `The question: ${question}`,
       this.input.options?.length ? `This is a choice question. Suggested options: ${this.input.options.join(", ")}. They may also name something else. When someone picks, call record_decision with outcome approved and choice set to what they picked.` : "",
+      this.input.options?.includes("always approve") ? `This is a payment. The answer must be one of: approve once (pay this one call), always approve (pay this endpoint from now on without asking), or deny. If they only say "yes" or "sure", ask "just this once, or always?" before you record it. Record the choice they said, never upgrade "yes" to "always approve".` : "",
       context ? `Background: ${context}` : "",
       `Refer to code by a short spoken name like "${shortName}". Never read file paths or file extensions aloud.`,
       `When the call connects, say exactly: "${opening}" Then ask the question in one or two short sentences.`,
@@ -366,6 +394,7 @@ class Conference {
       `If someone says another person decides or asks you to bring someone in, call add_guest with that person's name. People you can add: ${this.roster().map((p) => p.name).join(", ") || "nobody"}.${awayNames.length ? ` ${awayNames.join(" and ")} cannot be reached right now.` : ""}`,
       `When a new person joins, greet them by name, give a two-sentence summary, and ask them for the decision.`,
       `As soon as someone clearly decides (yes, no, or do something else instead), call record_decision right away without saying anything first. The call then wraps up automatically. Never narrate what you are about to do (no "let me confirm").`,
+      `If someone says that from now on a different person should be asked first, or should approve payments, call change_contact. That is a lasting change, not the answer to this question. If they also want that person to decide this question, add them with add_guest.`,
       `If the people on the call ask you to explain or repeat, do it right away. Never stay silent when someone talks to you.`,
     ].filter(Boolean).join("\n");
   }
@@ -390,6 +419,19 @@ const TOOLS = [
         choice: { type: "string", description: "For a choice question: the option they picked, exactly as listed. Otherwise empty." },
       },
       required: ["outcome", "answer", "decided_by"],
+    },
+  },
+  {
+    type: "function", name: "change_contact",
+    description: "Change, from now on, who Milo asks first about questions (first_contact) or who approves agent payments (payment_approver).",
+    parameters: {
+      type: "object",
+      properties: {
+        role: { type: "string", enum: ["first_contact", "payment_approver"] },
+        name: { type: "string", description: "First name of the new person" },
+        changed_by: { type: "string", description: "First name of the person asking for the change" },
+      },
+      required: ["role", "name"],
     },
   },
   { type: "function", name: "end_call", description: "Hang up for everyone after the decision is confirmed and you said bye.", parameters: { type: "object", properties: {}, required: [] } },

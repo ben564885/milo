@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { callBrief, DEMO, extractDecision, slackLine, type SlackLineKind, loadIdentities, ownerOf, type AskPayload, type Decision, type People, type Person, type Step } from "@milo/shared";
+import { callBrief, DEMO, endpointName, extractDecision, heardScope, loadIdentities, ownerOf, PAY_OPTIONS, PAY_DAILY_USD, paymentScope, ROLE_LABEL, slackLine, txLink, type AskPayload, type Decision, type People, type Person, type SlackLineKind, type Step } from "@milo/shared";
 import * as ch from "./channels.ts";
 import { startConference } from "./conference.ts";
 import { findDecision, memoriesFor, recordDecision, remember } from "./memory.ts";
+import { autoPaidToday, budgetLine, checkApproval, digestTs, listApprovals, recordPayment, saveApproval, saveDigestTs, type Approval, type Payment } from "./payments.ts";
+import { changeRole, getRole, roleChangeFrom } from "./roles.ts";
 import { allowed, resolvePeople } from "./people.ts";
 import { clear, emit, waitFor, type Signal } from "./signals.ts";
-import { list, save, type Request } from "./store.ts";
+import { get, hasReplied, list, save, type Request } from "./store.ts";
 
 const LISTEN_AFTER = Number(process.env.MILO_LISTEN_AFTER_MS ?? 20 * 60_000);
 const T = {
@@ -15,12 +17,13 @@ const T = {
   imessage: Number(process.env.MILO_T_IMESSAGE ?? (DEMO ? 15_000 : 10 * 60_000)),
   call: Number(process.env.MILO_T_CALL ?? 6 * 60_000),
 };
-const FIRST_CONTACT = process.env.MILO_FIRST_CONTACT ?? "ben";
 
 const ICON: Record<string, string> = { lookup: "🗂️", owner_agent: "🤖", slack: "💬", imessage: "📱", call: "📞", done: "✅", info: "•" };
 
 /** End older requests that are still waiting on the same thing, so they don't post stale messages later. */
 function supersedeOlder(r: Request) {
+  // Two agents paying the same endpoint at once are two real payments; never cancel one for the other.
+  if (r.payment) return;
   for (const old of list(50)) {
     if (old.id === r.id || old.status !== "running") continue;
     const same = r.file ? old.file === r.file : old.question.trim().toLowerCase() === r.question.trim().toLowerCase();
@@ -41,7 +44,8 @@ export function newRequest(p: AskPayload & { a2aTaskId?: string }): Request {
     requester: p.requester ?? "an agent",
     a2aTaskId: p.a2aTaskId,
     owner: p.owner,
-    options: p.options?.length ? p.options : undefined,
+    options: p.payment ? PAY_OPTIONS : p.options?.length ? p.options : undefined,
+    payment: p.payment,
     step: "lookup",
     status: "running",
     log: [],
@@ -121,7 +125,8 @@ export async function run(r: Request): Promise<Decision> {
   const avail = await ch.availability().catch(() => ({ slack: false, imessage: false, phone: false, phoneNumber: undefined }));
   const ownerHandle = (r.owner && people[r.owner] ? r.owner : undefined) ?? ownerOf(r.file);
   const owner: Person | undefined = ownerHandle ? people[ownerHandle] : undefined;
-  const target: Person | undefined = people[FIRST_CONTACT] ?? owner;
+  // Payments go to the payment approver, everything else to the first contact. Both default to Ben and anyone can change them.
+  const target: Person | undefined = people[getRole(r.payment ? "payment_approver" : "first_contact").handle] ?? owner;
   r.owner = owner?.handle;
   r.target = target?.handle;
   const names = Object.values(people).map((p) => p.name);
@@ -164,6 +169,23 @@ export async function run(r: Request): Promise<Decision> {
 async function ladder(r: Request, people: People, owner: Person | undefined, target: Person | undefined, names: string[], avail: Awaited<ReturnType<typeof ch.availability>>): Promise<Decision | undefined> {
   // 0. Already decided?
   r.step = "lookup"; save(r);
+  // A payment is covered only by an exact standing approval for that endpoint; a person decides everything else.
+  if (r.payment) {
+    const p = r.payment;
+    const hit = checkApproval(p);
+    if (hit?.covered) {
+      await log(r, "lookup", `${hit.approval.approvedBy ?? "someone"} already approved ${p.endpoint} for every call (up to ${hit.approval.price}), no need to bug anyone`);
+      return decision({ outcome: "approved", answer: `Standing approval for ${p.endpoint} up to ${hit.approval.price}.`, choice: "always approve", scope: "always", decidedBy: hit.approval.approvedBy, source: { channel: "memory", ref: hit.approval.requestId } });
+    }
+    if (hit) {
+      await log(r, "lookup", `${p.endpoint} was approved before, but ${hit.changed}, so asking again`, false);
+      r.payNote = `it was always-approved before, but ${hit.changed}`;
+      r.context = `${r.context}\nThis endpoint was approved before at ${hit.approval.price}, but ${hit.changed}.`.trim(); save(r);
+    } else {
+      await log(r, "lookup", `no approval on file for ${p.endpoint}, a person has to decide`);
+    }
+    return reach(r, people, target, owner, names, avail);
+  }
   const found = await findDecision(r.question, r.file);
   if (found) {
     const outcome = /Outcome: (\w+)/.exec(found.body)?.[1] as Decision["outcome"] | undefined;
@@ -202,7 +224,10 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     r.step = "slack"; save(r);
     let q = asked(r).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
-    await say(r, line("ask", { to: target!.name, from: r.requester, question: r.question, options: r.options, file: r.file }, `hey {who}, quick one from ${lc(r.requester)}: ${lc(q)}`, { who: ch.mention(target) }));
+    const p = r.payment;
+    await say(r, p
+      ? line("pay_ask", { to: target!.name, from: r.requester, price: p.price, endpoint: p.endpoint, what_it_sells: p.description, note: r.payNote, choices: PAY_OPTIONS }, `hey {who}, ${lc(r.requester)} wants to pay ${p.price} to call ${p.endpoint}${p.description ? ` (${lc(p.description)})` : ""}${r.payNote ? `. ${r.payNote}` : ""}. approve once, always approve, or deny?`, { who: ch.mention(target) })
+      : line("ask", { to: target!.name, from: r.requester, question: r.question, options: r.options, file: r.file }, `hey {who}, quick one from ${lc(r.requester)}: ${lc(q)}`, { who: ch.mention(target) }));
     await log(r, "slack", `waiting ${Math.round(T.slack / 1000)}s for ${target!.name} to answer here`);
     const d = await awaitHuman(r, T.slack, names, target!);
     if (d) return d;
@@ -217,20 +242,29 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     r.step = "imessage"; save(r);
     // Inkbox blocks links in a first iMessage, and "billing.ts" looks like a domain. Break the dots.
     const noLinks = (s: string) => s.replace(/`/g, "").replace(/\(?[\w./-]*?([\w-]+)\.[a-z]{1,5}\b\)?/gi, "the $1 file").replace(/https?:\S+/g, "");
-    // Two casual texts: "yo", then the question. Before a person's first reply, each must be under 160 characters.
-    let q = noLinks(asked(r)).trim();
+    // Two casual texts, "yo" then the question, once the person has replied to Milo before. Until then Inkbox allows
+    // only three texts in total (each under 160 characters), so send just the question.
+    const warm = hasReplied(target.phone);
+    let q = noLinks(r.payment ? `${r.requester} wants to pay ${r.payment.price} for ${endpointName(r.payment.url)}. ok once, always, or no? (👍 once, ❤️ always)` : asked(r)).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
     if (q.length > 155) q = q.slice(0, 154).trimEnd() + "…";
-    const sent = await ch.imessageSend(target.phone, "yo")
+    const sent = await (warm ? ch.imessageSend(target.phone, "yo") : Promise.resolve())
       .then(() => ch.imessageSend(target.phone!, q))
       .catch(async (e) => {
-        await log(r, "imessage", `couldn't text: ${e.detail?.message ?? e.message}`, false);
+        const limit = /three messages|first reply/i.test(e.detail?.message ?? e.message);
+        await log(r, "imessage", limit ? `can't text ${target.name}: they haven't replied to Milo's number yet, and Inkbox allows only three texts until they do` : `couldn't text: ${e.detail?.message ?? e.message}`, false);
         return undefined;
       });
+    // No text went out: give Slack the text's waiting time too, so a call never comes as the first nudge after a short wait.
+    if (!sent && r.slack?.threadTs) {
+      await log(r, "slack", `waiting ${Math.round(T.imessage / 1000)}s more on slack before calling`);
+      const d = await awaitHuman(r, T.imessage, names, target);
+      if (d) return d;
+    }
     if (sent) {
       r.imessageId = sent.id; r.imessageConversationId = sent.conversationId; save(r);
       if (r.slack?.threadTs) void say(r, pick(["{who} texted you too", "{who} sent you a text too", "also texted you {who}"]).replace("{who}", ch.mention(target)));
-      await log(r, "imessage", `texted ${target.name}: "yo" then "${q}". waiting ${Math.round(T.imessage / 1000)}s`);
+      await log(r, "imessage", `texted ${target.name}: ${warm ? `"yo" then ` : ""}"${q}". waiting ${Math.round(T.imessage / 1000)}s`);
       const d = await awaitHuman(r, T.imessage, names, target);
       if (d) return d;
       await log(r, "imessage", `no answer from ${target.name} over text`, false);
@@ -255,6 +289,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
       const conf = startConference({
         question: asked(r), options: r.options, context: r.context.replace(/\n?\w+ said \w+ owns this and should decide\./, "").trim(), requester: r.requester,
         shortName: short, target, people, away, referredBy,
+        onChangeRole: async (role, name, by) => (await changeRole(role, name, by, "the phone")).text,
         onEvent: (text, ok) => {
           void log(r, "call", text, ok);
           const adding = /^adding (\w+) to the call/.exec(text)?.[1];
@@ -293,6 +328,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
       r.call = { transcript: res.transcript, recordingPath: res.recordingPath, seconds: res.seconds, joined: res.joined };
       save(r);
       if (!res.connected && !res.decision) { await log(r, "call", `${target.name} didn't pick up`, false); return undefined; }
+      r.heard = res.transcript.split("\n").filter((l) => /^them:/.test(l)).join("\n"); save(r);
       if (res.decision) return decision({ ...res.decision, source: { channel: "call", ref: res.joined.join(", ") } });
       const x = await extractDecision(r.question, res.transcript, names, r.options);
       await log(r, "call", "call ended");
@@ -314,6 +350,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
         const transcript = sig.transcript + (sig.actionItems.length ? `\n\nAction items:\n${sig.actionItems.join("\n")}` : "");
         await log(r, "call", sig.hangup === "voicemail" ? `${target.name} didn't pick up. Left a voicemail.` : `Call ended (${sig.outcome ?? "completed"}).`, sig.hangup === "voicemail" ? false : undefined);
         if (sig.hangup === "voicemail" || !sig.transcript.trim()) return undefined;
+        r.heard = sig.transcript.split("\n").filter((l) => /^Human:/.test(l)).join("\n"); save(r);
         const x = await extractDecision(r.question, transcript, names, r.options);
         if (x.outcome !== "no_answer") return decision({ ...x, instead: x.instead || undefined, decidedBy: x.decidedBy || target.name, source: { channel: "call", ref: callId } });
         return undefined;
@@ -351,6 +388,17 @@ async function awaitHuman(r: Request, ms: number, names: string[], who: Person):
 }
 
 async function interpret(r: Request, sig: Signal, names: string[], who: Person): Promise<Decision | undefined> {
+  // Payment: 👍 approves this call, ❤️ approves the endpoint from now on, 👎 denies.
+  if (sig.kind === "imessage_tapback" && r.payment) {
+    const always = sig.reaction === "love" || sig.emoji === "❤️";
+    const once = ["like", "emphasize"].includes(sig.reaction) || sig.emoji === "👍";
+    const no = sig.reaction === "dislike" || sig.emoji === "👎";
+    if (!always && !once && !no) return undefined;
+    const choice = no ? "deny" : always ? "always approve" : "approve once";
+    r.heard = choice; save(r);
+    await log(r, "imessage", `${who.name} reacted ${no ? "👎, deny" : always ? "❤️, always approve" : "👍, approve once"}`);
+    return decision({ outcome: no ? "blocked" : "approved", answer: `${choice} (iMessage reaction).`, choice, decidedBy: who.name, source: { channel: "imessage", ref: r.imessageId } });
+  }
   if (sig.kind === "imessage_tapback" && r.options?.length) return undefined;
   if (sig.kind === "imessage_tapback") {
     const up = ["like", "love", "emphasize"].includes(sig.reaction) || sig.emoji === "👍";
@@ -362,10 +410,15 @@ async function interpret(r: Request, sig: Signal, names: string[], who: Person):
   if (sig.kind === "slack_reply" || sig.kind === "imessage_reply") {
     const channel = sig.kind === "slack_reply" ? "slack" : "imessage";
     const by = (sig.kind === "slack_reply" ? sig.userName : undefined) ?? who.name;
-    const x = await extractDecision(r.question, sig.text, names, r.options);
+    const [x, change] = await Promise.all([extractDecision(r.question, sig.text, names, r.options), roleChangeFrom(sig.text, by, channel)]);
+    r.heard = sig.text; save(r);
     r.replied = true;
     r.lastReply = sig.text;
     await log(r, channel, `${by} said "${sig.text.slice(0, 120)}"`);
+    if (change) await log(r, "info", `${by} made ${change.person!.name} the ${ROLE_LABEL[change.role]}`);
+    // The new person owns this kind of question now: hand this one to them unless it was also answered.
+    const mine = change && change.role === (r.payment ? "payment_approver" : "first_contact") && change.person!.handle !== who.handle;
+    if (mine && (x.outcome === "no_answer" || x.outcome === "redirect")) return decision({ outcome: "redirect", answer: `${by} handed this to ${change.person!.name}.`, instead: `Ask ${change.person!.name}`, decidedBy: by, source: { channel, ref: r.slack?.threadTs ?? r.imessageId } });
     if (x.outcome === "no_answer" && !/^ask\b/i.test(x.instead ?? "")) await log(r, channel, `not a clear yes or no, still listening`, false);
     if (x.outcome !== "no_answer") return decision({ ...x, instead: x.instead || undefined, decidedBy: x.decidedBy || by, source: { channel, ref: r.slack?.threadTs ?? r.imessageId } });
   }
@@ -410,6 +463,24 @@ async function buildCallReason(r: Request, target: Person, owner?: Person, peopl
 
 async function finish(r: Request, d: Decision, people: People, owner?: Person, target?: Person) {
   clear(r.id);
+  // A decision with no real outcome (e.g. a cut-off tool call on a phone call) is no answer, never a deny or an approve.
+  if (!["approved", "blocked", "redirect", "no_answer"].includes(d.outcome)) d = { ...d, outcome: "no_answer", answer: d.answer || "No clear decision." };
+  // A payment decision is approve-once, always-approve, or deny. Anything that isn't a clear approval is a deny.
+  if (r.payment && d.outcome !== "no_answer" && !(d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? ""))) {
+    const scope = paymentScope(d);
+    d = scope === "deny" ? { ...d, outcome: "blocked", scope: undefined } : { ...d, outcome: "approved", scope };
+  }
+  // Never guess spending authority: the person's own words must back the approval. "Always" needs an explicit always;
+  // an unclear answer ("Lexik") is no answer, so nothing is paid.
+  if (r.payment && d.scope && d.source.channel !== "memory") {
+    const said = heardScope(r.heard ?? "");
+    const quote = (r.heard ?? "").split("\n").at(-1)?.replace(/^\w+:\s*/, "").slice(0, 80) ?? "";
+    if (said !== "always" && said !== "once") {
+      d = { ...d, outcome: "no_answer", scope: undefined, choice: undefined, answer: `Not paying: no clear approval was heard${quote ? ` (last thing said: "${quote}")` : ""}.` };
+    } else if (d.scope === "always" && said === "once") {
+      d = { ...d, scope: "once", choice: "approve once", answer: `Approved for this call only ("always" wasn't said).` };
+    }
+  }
   r.decision = d;
   r.step = "done";
   r.status = "done";
@@ -419,8 +490,14 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
   // "Ask Philip" is a pointer, not a decision; never save it.
   if (d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? "")) d = r.decision = { ...d, outcome: "no_answer" };
   if (d.outcome !== "no_answer" && d.source.channel !== "memory") {
-    const noteId = await recordDecision({ question: r.question, file: r.file, decision: d, requester: r.requester }).catch((e) => { console.warn("[notes]", e.message); return undefined; });
-    if (noteId) await log(r, "info", `saved it for next time`);
+    // Payments are never saved as notes: a one-time approval must not be found and reused later.
+    if (r.payment && d.scope === "always") {
+      saveApproval({ ...r.payment, approvedBy: d.decidedBy, at: d.at, requestId: r.id });
+      await log(r, "info", `saved: ${r.requester} can pay ${r.payment.endpoint} up to ${r.payment.price} without asking`);
+    } else if (!r.payment) {
+      const noteId = await recordDecision({ question: r.question, file: r.file, decision: d, requester: r.requester }).catch((e) => { console.warn("[notes]", e.message); return undefined; });
+      if (noteId) await log(r, "info", `saved it for next time`);
+    }
     const decider = Object.values(people).find((p) => p.name === d.decidedBy) ?? owner;
     await remember(decider, "context", `Decided on ${new Date().toDateString()}: ${r.file ?? r.question} → ${d.outcome}${d.instead ? `; instead: ${d.instead}` : ""}.`);
     if (target && decider && decider.handle !== target.handle) {
@@ -429,7 +506,8 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
   }
 
   // Close the loop on the text Milo sent: a threaded "taken care of" after a call, or a checkmark after a text answer.
-  if (r.imessageId && r.imessageConversationId && d.outcome !== "no_answer") {
+  // Skip it for someone who never replied: it would use up one of their three texts.
+  if (r.imessageId && r.imessageConversationId && d.outcome !== "no_answer" && hasReplied(people[r.target ?? ""]?.phone ?? target?.phone)) {
     const close = d.source.channel === "call" ? ch.imessageInConversation(r.imessageConversationId, "taken care of over the phone", r.imessageId)
       : d.source.channel === "imessage" ? ch.imessageInConversation(r.imessageConversationId, "✓")
       : undefined;
@@ -440,7 +518,8 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
 
   if (r.a2aTaskId) {
     await a2aChains.get(r.id);
-    const text = isSuperseded(r) && d.outcome === "no_answer" ? "Replaced by a newer question about the same thing. Use the answer to that one." : d.outcome === "no_answer" ? "No human decision yet. Do not proceed with this change." : `Decision: ${d.choice ? `use ${d.choice}` : d.outcome}. ${d.answer}${d.instead ? ` Instead: ${d.instead}` : ""}`;
+    const text = isSuperseded(r) && d.outcome === "no_answer" ? "Replaced by a newer question about the same thing. Use the answer to that one." : d.outcome === "no_answer" ? "No human decision yet. Do not proceed with this change." : r.payment ? `Decision: ${d.scope === "always" ? "pay; this endpoint is approved from now on" : d.scope === "once" ? "pay this one time" : "do not pay"}. ${d.answer}`
+      : `Decision: ${d.choice ? `use ${d.choice}` : d.outcome}. ${d.answer}${d.instead ? ` Instead: ${d.instead}` : ""}`;
     await ch.a2aComplete(r.a2aTaskId, text, { ...d, requestId: r.id }).catch((e) => console.warn("[a2a] complete failed:", e.message));
   }
 }
@@ -450,26 +529,77 @@ async function sayOutcome(r: Request, d: Decision, people: People) {
   const by = d.decidedBy ? lc(d.decidedBy) : "they";
   const verdict = d.choice ? lc(d.choice) : d.outcome === "approved" ? "go ahead" : "no";
   const instead = d.instead ? `, going with ${lc(d.instead).replace(/\.$/, "")}` : "";
-  const facts = { question: r.question, options: r.options, from: r.requester, file: r.file, outcome: d.outcome, choice: d.choice, instead: d.instead, decided_by: d.decidedBy, decision: d.answer, what_they_said: r.lastReply, via: d.source.channel };
+  const facts = { question: r.question, options: r.options, from: r.requester, file: r.file, outcome: d.outcome, choice: d.choice, instead: d.instead, decided_by: d.decidedBy, decision: d.answer, what_they_said: r.lastReply, via: d.source.channel, ...(r.payment && { payment: { price: r.payment.price, endpoint: r.payment.endpoint, decision: d.outcome === "approved" ? (d.scope === "always" ? "approved from now on" : "pay this once") : "do not pay", daily_budget: d.scope === "always" ? `$${PAY_DAILY_USD.toFixed(2)}` : undefined } }) };
+  const close: SlackLineKind = r.payment ? "pay_close" : "close";
   const src = d.source.channel;
   if (d.outcome === "no_answer") {
     if (r.slack?.threadTs) await say(r, line(r.listening ? "still_nothing" : "no_answer", facts, r.listening ? "still nothing, holding off for now" : "couldn't reach anyone yet, holding off for now"));
     return;
   }
+  if (src === "memory" && r.payment) return; // the payment receipt posts to Slack instead
   if (src === "memory") return void (await say(r, line("memory", facts, `fyi ${lc(r.requester)} asked about ${shortFile(r)} again. ${by} already said ${verdict} on this earlier${instead}, so i didn't bug anyone`)));
   if (src === "owner_agent") return void (await say(r, line("owner_agent", facts, `fyi ${lc(r.requester)} asked about ${shortFile(r)}. ${lc(d.decidedBy ?? "the owner's agent")} had the answer (${verdict}${instead}), so i didn't bug anyone`)));
-  if (src === "slack") return void (await say(r, line("close", facts, `got it, thanks${instead ? ` ${instead.slice(2)}` : ""}`)));
-  if (src === "imessage") return void (await say(r, line("close", facts, `${by} answered over text, ${verdict}${instead}. thanks`)));
+  if (src === "slack") return void (await say(r, line(close, facts, `got it, thanks${instead ? ` ${instead.slice(2)}` : ""}`)));
+  if (src === "imessage") return void (await say(r, line(close, facts, `${by} answered over text, ${verdict}${instead}. thanks`)));
   // Call: summary + transcript link + recording.
   const c = r.call;
   const names = (c?.joined ?? []).map(lc);
   const who = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] ?? by;
   const lines = (c?.transcript ?? "").split("\n").map((l) => { const m = /^(milo|them): (.*)$/.exec(l); return m ? [m[1], m[2]] : null; }).filter(Boolean);
   const url = transcriptLink({ q: r.question, from: r.requester, who: names.join(", "), secs: c?.seconds, at: d.at, decision: d.answer, by: d.decidedBy, lines });
-  await say(r, line("close", { ...facts, on_call: names, has_transcript: true }, `talked to ${who}, ${by} said ${verdict}${instead}. {transcript}`, { transcript: `<${url}|transcript>` }));
+  await say(r, line(close, { ...facts, on_call: names, has_transcript: true }, `talked to ${who}, ${by} said ${verdict}${instead}. {transcript}`, { transcript: `<${url}|transcript>` }));
   if (c?.recordingPath) await say(r, "", { path: c.recordingPath, comment: "call recording" });
   void people;
 }
 
 export const timeouts = T;
 export type { Step };
+
+const slackConfigured = () => { if (process.env.MILO_NO_SLACK) return false; try { return Boolean(loadIdentities().slack); } catch { return false; } };
+
+/** The agent reports a payment it made (or tried) after a decision. Every one is logged and posted to Slack. */
+export async function reportPayment(p: Pick<Payment, "endpoint" | "status" | "requestId" | "httpStatus" | "transaction" | "payer">): Promise<string> {
+  const r = p.requestId ? get(p.requestId) : undefined;
+  const ask = r?.payment;
+  if (!r || !ask || r.decision?.outcome !== "approved") return "No approved payment request matches this receipt.";
+  const d = r.decision;
+  const auto = d.source.channel === "memory";
+  recordPayment({ ...ask, requestId: r.id, status: p.status, httpStatus: p.httpStatus, transaction: p.transaction, payer: p.payer, auto, at: new Date().toISOString() });
+  const by = lc(d.decidedBy ?? "someone");
+  const how = auto ? `on ${by}'s standing approval` : d.scope === "always" ? `${by} approved this endpoint from now on` : `${by} approved this one`;
+  const approval = listApprovals().find((a) => a.endpoint === ask.endpoint);
+  const link = txLink(ask.network, p.transaction);
+  r.log.push({ at: new Date().toISOString(), step: "info", text: p.status === "paid" ? `paid ${ask.price}` : "payment didn't go through", ok: p.status === "paid" ? undefined : false });
+  save(r);
+  const price = ask.price.replace("USDC", "usdc");
+  if (p.status !== "paid") {
+    const text = `heads up, ${lc(r.requester)} was cleared to pay ${price} for ${ask.endpoint} (${how}) but the payment didn't go through${p.httpStatus ? ` (http ${p.httpStatus})` : ""}`;
+    if (r.slack?.threadTs) await say(r, text);
+    else if (slackConfigured()) await ch.slackPost(text).catch((e) => console.warn("[slack]", e.message));
+    return text;
+  }
+  // Paid on a standing approval: no new message per payment. One message per endpoint per day, edited as it grows.
+  if (auto && approval) return postDigest(r.requester, approval, link);
+  const text = `paid ${price} for ${ask.endpoint}, ${how}${approval ? `. ${budgetLine(approval)}` : ""}${link ? ` <${link}|transaction>` : ""}`;
+  if (r.slack?.threadTs) await say(r, text);
+  else if (slackConfigured()) await ch.slackPost(text).catch((e) => console.warn("[slack]", e.message));
+  return text;
+}
+
+const digestChains = new Map<string, Promise<unknown>>();
+
+/** Post or edit today's one message for an always-approved endpoint: how many payments, how much of the budget, the last transaction. */
+function postDigest(requester: string, a: Approval, link?: string): Promise<string> {
+  const key = `${a.endpoint}|${new Date().toDateString()}`;
+  const paid = autoPaidToday(a);
+  const n = paid.length;
+  const text = `${lc(requester)} paid ${a.endpoint} ${n === 1 ? "once" : `${n} times`} today on ${lc(a.approvedBy ?? "someone")}'s standing ok, ${budgetLine(a)}${link ? `. last one: <${link}|transaction>` : ""}`;
+  if (!slackConfigured()) return Promise.resolve(text);
+  const next = (digestChains.get(key) ?? Promise.resolve()).then(async () => {
+    const ts = digestTs(key);
+    if (ts) await ch.slackUpdate(ts, text);
+    else { const posted = await ch.slackPost(text); if (posted) saveDigestTs(key, posted); }
+  }).catch((e) => console.warn("[slack]", e.message));
+  digestChains.set(key, next);
+  return next.then(() => text);
+}

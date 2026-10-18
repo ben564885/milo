@@ -10,8 +10,13 @@
     "typecheck": "tsc -b"
   },
   "devDependencies": {
+    "@hono/node-server": "^2.1.5",
     "@types/node": "^26.6.5",
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "hono": "^4.13.13",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "viem": "^2.57.7"
   }
 }

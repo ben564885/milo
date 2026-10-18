@@ -85,7 +85,36 @@ export async function callBrief(input: { person: string; requester: string; ques
   return `${input.requester} is blocked and asks: ${input.question}${input.context ? ` Context: ${input.context.slice(0, 300)}` : ""}`;
 }
 
-export type SlackLineKind = "ask" | "texted" | "calling" | "pulling_in" | "close" | "memory" | "owner_agent" | "no_answer" | "listening" | "still_nothing";
+export type Role = "first_contact" | "payment_approver";
+export const ROLE_LABEL: Record<Role, string> = { first_contact: "first contact", payment_approver: "payment approver" };
+
+// Cheap gate before asking the model: the text must talk about a role and about changing it.
+const ROLE_WORDS = /\b(first contact|first person|point person|go-?to|ask first|approv\w*|payments?|spend\w*|purchases?|budget)\b/i;
+const CHANGE_WORDS = /\b(from now on|going forward|in the future|default|instead of me|make|set|change|switch|handles?|owns?|be the|takes? over|in charge)\b/i;
+
+/**
+ * Is someone changing, for good, who Milo asks first or who approves payments?
+ * "ask Philip" about one question is a redirect, not a change.
+ */
+export async function extractRoleChange(text: string, people: string[]): Promise<{ role: Role; person: string } | undefined> {
+  if (!ROLE_WORDS.test(text) || !CHANGE_WORDS.test(text)) return undefined;
+  const out = await json<{ role: Role | "none"; person: string }>(
+    "Milo is an assistant that asks a team's humans for decisions. It has two standing settings: first_contact (the person Milo asks first about any question) and payment_approver (the person who approves an agent's payments to paid APIs). Decide if this message changes one of them from now on, and to whom. \"Ask Philip\" or \"Philip owns this\" about one question is NOT a change: return none. \"From now on ask Philip first\" or \"make Philip the first contact\" = first_contact. \"Philip approves payments from now on\" or \"send spending to Philip\" = payment_approver. If it is not a lasting change, or names nobody from the list, return none.",
+    `People: ${people.join(", ")}\n\nMessage:\n${text}`,
+    { type: "object", additionalProperties: false, required: ["role", "person"], properties: { role: { type: "string", enum: ["first_contact", "payment_approver", "none"] }, person: { type: "string", description: "First name from the list, or empty." } } },
+  );
+  if (out) return out.role !== "none" && people.some((p) => p.toLowerCase() === out.person.toLowerCase()) ? { role: out.role, person: out.person } : undefined;
+  return heuristicRoleChange(text, people);
+}
+
+export function heuristicRoleChange(text: string, people: string[]): { role: Role; person: string } | undefined {
+  if (!ROLE_WORDS.test(text) || !/\b(from now on|going forward|in the future|default|make|set|change|switch|takes? over|in charge)\b/i.test(text)) return undefined;
+  const person = people.find((p) => new RegExp(`\\b${p}\\b`, "i").test(text));
+  if (!person) return undefined;
+  return { role: /pay|spend|approv|purchas|budget/i.test(text) ? "payment_approver" : "first_contact", person };
+}
+
+export type SlackLineKind = "ask" | "texted" | "calling" | "pulling_in" | "close" | "memory" | "owner_agent" | "no_answer" | "listening" | "still_nothing" | "pay_ask" | "pay_close";
 
 /**
  * Write one Slack message in Milo's voice from facts. Placeholders: {who} = mention of the person
@@ -106,6 +135,8 @@ export async function slackLine(kind: SlackLineKind, facts: Record<string, unkno
       "close: the question is resolved; acknowledge their actual decision in your own words, no mention needed. e.g. \"ok, leaving the pill out\" or \"green it is, philip made the call. {transcript}\"",
       "memory: fyi someone already decided this earlier, so you didn't bother anyone. owner_agent: the owner's agent already knew.",
       "no_answer: nobody answered, holding off. listening: nobody answered yet, you'll keep an eye on the thread. still_nothing: still no answer, holding off.",
+      "pay_ask: the coding agent wants to pay a paid api. Say the price and the endpoint exactly as given, what it sells if given, and the note if given (e.g. the price went up). End by asking: approve once, always approve, or deny. e.g. \"hey {who}, claude code wants to pay $0.01 usdc to call GET https://x.com/api/weather (current weather). approve once, always approve, or deny?\"",
+      "pay_close: the payment question is resolved. Say what was decided in plain words: paying once, approved from now on (with the daily budget if given), or not paying. e.g. \"ok, it can pay that one from now on, up to $5 a day\"",
     ].join("\n"),
     JSON.stringify({ kind, ...facts }),
     { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string" } } },
