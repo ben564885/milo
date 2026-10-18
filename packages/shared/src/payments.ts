@@ -58,3 +58,21 @@ export function paymentScope(d: Pick<Decision, "outcome" | "choice" | "answer">)
   if (/\b(deny|denied|no|don'?t|block)\b/.test(d.choice ?? "")) return "deny";
   return /\b(always|every ?time|future|from now on|all)\b/.test(t) ? "always" : "once";
 }
+
+/**
+ * What the person actually said, as a payment answer.
+ * "Always" needs an explicit always / every time / from now on; any approval needs a yes-word; mumbles count as nothing.
+ * Used to check the model's reading of a reply or call, so spending authority is never guessed.
+ */
+export function heardScope(said: string): "always" | "once" | "deny" | undefined {
+  const lines = said.split("\n").map((l) => l.replace(/^\s*(them|human)\s*:\s*/i, "").trim().toLowerCase()).filter(Boolean);
+  const kind = (l: string) =>
+    /\b(deny|denied|don'?t (approve|pay|do)|do not|not (approve|pay)|nope|no way|block|reject)\b/.test(l) || /^no\b/.test(l) ? "deny"
+    : /\b(always|every ?time|from now on|all future|permanently)\b/.test(l) && !/\b(not|never|don'?t)\b/.test(l) ? "always"
+    : /\b(once|one time|this time|just this|yes|yeah|yep|yup|sure|ok|okay|approved?|fine|go ahead|do it|sounds good)\b/.test(l) ? "once"
+    : undefined;
+  const kinds = lines.map(kind).filter(Boolean);
+  // A "no" counts only as the latest clear answer; otherwise an explicit "always" anywhere wins over a later "ok, bye".
+  if (kinds.at(-1) === "deny") return "deny";
+  return kinds.includes("always") ? "always" : kinds.includes("once") ? "once" : undefined;
+}

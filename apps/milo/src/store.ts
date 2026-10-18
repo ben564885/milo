@@ -27,6 +27,7 @@ export type Request = {
   options?: string[];
   payment?: PaymentAsk;
   payNote?: string; // why a payment is asked again, e.g. the price went up
+  heard?: string; // what the person said that the decision came from (checked for payments)
   listening?: boolean;
   superseded?: boolean;
   call?: { transcript: string; recordingPath?: string; seconds: number; joined: string[] };

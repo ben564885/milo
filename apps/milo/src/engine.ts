@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { callBrief, DEMO, endpointName, extractDecision, loadIdentities, ownerOf, PAY_OPTIONS, paymentScope, ROLE_LABEL, txLink, type AskPayload, type Decision, type People, type Person, type Step } from "@milo/shared";
+import { callBrief, DEMO, endpointName, extractDecision, heardScope, loadIdentities, ownerOf, PAY_OPTIONS, paymentScope, ROLE_LABEL, txLink, type AskPayload, type Decision, type People, type Person, type Step } from "@milo/shared";
 import * as ch from "./channels.ts";
 import { startConference } from "./conference.ts";
 import { findDecision, memoriesFor, recordDecision, remember } from "./memory.ts";
@@ -302,6 +302,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
       r.call = { transcript: res.transcript, recordingPath: res.recordingPath, seconds: res.seconds, joined: res.joined };
       save(r);
       if (!res.connected && !res.decision) { await log(r, "call", `${target.name} didn't pick up`, false); return undefined; }
+      r.heard = res.transcript.split("\n").filter((l) => /^them:/.test(l)).join("\n"); save(r);
       if (res.decision) return decision({ ...res.decision, source: { channel: "call", ref: res.joined.join(", ") } });
       const x = await extractDecision(r.question, res.transcript, names, r.options);
       await log(r, "call", "call ended");
@@ -323,6 +324,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
         const transcript = sig.transcript + (sig.actionItems.length ? `\n\nAction items:\n${sig.actionItems.join("\n")}` : "");
         await log(r, "call", sig.hangup === "voicemail" ? `${target.name} didn't pick up. Left a voicemail.` : `Call ended (${sig.outcome ?? "completed"}).`, sig.hangup === "voicemail" ? false : undefined);
         if (sig.hangup === "voicemail" || !sig.transcript.trim()) return undefined;
+        r.heard = sig.transcript.split("\n").filter((l) => /^Human:/.test(l)).join("\n"); save(r);
         const x = await extractDecision(r.question, transcript, names, r.options);
         if (x.outcome !== "no_answer") return decision({ ...x, instead: x.instead || undefined, decidedBy: x.decidedBy || target.name, source: { channel: "call", ref: callId } });
         return undefined;
@@ -367,6 +369,7 @@ async function interpret(r: Request, sig: Signal, names: string[], who: Person):
     const no = sig.reaction === "dislike" || sig.emoji === "👎";
     if (!always && !once && !no) return undefined;
     const choice = no ? "deny" : always ? "always approve" : "approve once";
+    r.heard = choice; save(r);
     await log(r, "imessage", `${who.name} reacted ${no ? "👎, deny" : always ? "❤️, always approve" : "👍, approve once"}`);
     return decision({ outcome: no ? "blocked" : "approved", answer: `${choice} (iMessage reaction).`, choice, decidedBy: who.name, source: { channel: "imessage", ref: r.imessageId } });
   }
@@ -382,6 +385,7 @@ async function interpret(r: Request, sig: Signal, names: string[], who: Person):
     const channel = sig.kind === "slack_reply" ? "slack" : "imessage";
     const by = (sig.kind === "slack_reply" ? sig.userName : undefined) ?? who.name;
     const [x, change] = await Promise.all([extractDecision(r.question, sig.text, names, r.options), roleChangeFrom(sig.text, by, channel)]);
+    r.heard = sig.text; save(r);
     r.replied = true;
     await log(r, channel, `${by} said "${sig.text.slice(0, 120)}"`);
     if (change) await log(r, "info", `${by} made ${change.person!.name} the ${ROLE_LABEL[change.role]}`);
@@ -438,6 +442,17 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
   if (r.payment && d.outcome !== "no_answer" && !(d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? ""))) {
     const scope = paymentScope(d);
     d = scope === "deny" ? { ...d, outcome: "blocked", scope: undefined } : { ...d, outcome: "approved", scope };
+  }
+  // Never guess spending authority: the person's own words must back the approval. "Always" needs an explicit always;
+  // an unclear answer ("Lexik") is no answer, so nothing is paid.
+  if (r.payment && d.scope && d.source.channel !== "memory") {
+    const said = heardScope(r.heard ?? "");
+    const quote = (r.heard ?? "").split("\n").at(-1)?.replace(/^\w+:\s*/, "").slice(0, 80) ?? "";
+    if (said !== "always" && said !== "once") {
+      d = { ...d, outcome: "no_answer", scope: undefined, choice: undefined, answer: `Not paying: no clear approval was heard${quote ? ` (last thing said: "${quote}")` : ""}.` };
+    } else if (d.scope === "always" && said === "once") {
+      d = { ...d, scope: "once", choice: "approve once", answer: `Approved for this call only ("always" wasn't said).` };
+    }
   }
   r.decision = d;
   r.step = "done";

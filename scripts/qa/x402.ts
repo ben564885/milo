@@ -4,13 +4,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+process.env.MILO_FIRST_CONTACT = "ben"; // pin defaults so local .env choices don't change the test
+process.env.MILO_PAYMENT_APPROVER = "ben";
 process.env.MILO_DB = join(mkdtempSync(join(tmpdir(), "milo-qa-")), "milo.db"); // never touch the real data/milo.db
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { wrapFetchWithPayment, decodePaymentResponseHeader, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { endpointKey, endpointName, formatPrice, heuristicRoleChange, paymentScope, txLink, usdValue } from "../../packages/shared/src/index.ts";
+import { endpointKey, endpointName, formatPrice, heardScope, heuristicRoleChange, paymentScope, txLink, usdValue } from "../../packages/shared/src/index.ts";
 // Imported after MILO_DB is set, so they open the temp database.
 const { checkApproval, recordPayment, revokeApproval, saveApproval, spentToday } = await import("../../apps/milo/src/payments.ts");
 const { changeRole, getRole } = await import("../../apps/milo/src/roles.ts");
@@ -28,6 +30,13 @@ await t("formatPrice zero", () => assert.equal(formatPrice("0", "0x833589fCD6eDb
 await t("formatPrice USDC mainnet", () => assert.equal(formatPrice("1500000", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "eip155:8453"), "$1.50 USDC"));
 await t("usdValue: unknown token is undefined", () => assert.equal(usdValue("10000", "0xabc", "eip155:84532"), undefined));
 await t("usdValue: 1.5 USDC", () => assert.equal(usdValue("1500000", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "eip155:8453"), 1.5));
+await t("heard: mumbles are no answer (Lexik call)", () => assert.equal(heardScope("them: The key more difficult task.\nthem: I answered it.\nthem: Lexik."), undefined));
+await t("heard: 'I approve it' is once", () => assert.equal(heardScope("them: You know, certain APIs are very clunky.\nthem: I approve it.\nthem: That's not relevant to the agent most of the time."), "once"));
+await t("heard: always, then 'ok bye' stays always", () => assert.equal(heardScope("them: always approve\nthem: ok bye"), "always"));
+await t("heard: 'don't always' is not always", () => assert.notEqual(heardScope("them: don't always approve it, just this once"), "always"));
+await t("heard: latest no wins", () => assert.equal(heardScope("them: yes\nthem: actually no, deny it"), "deny"));
+await t("heard: text reply 'always'", () => assert.equal(heardScope("always"), "always"));
+await t("heard: tapback choice", () => assert.equal(heardScope("approve once"), "once"));
 await t("scope: always approve", () => assert.equal(paymentScope({ outcome: "approved", choice: "always approve", answer: "" }), "always"));
 await t("scope: approve once", () => assert.equal(paymentScope({ outcome: "approved", choice: "approve once", answer: "" }), "once"));
 await t("scope: plain yes is once", () => assert.equal(paymentScope({ outcome: "approved", answer: "yes go ahead" }), "once"));
