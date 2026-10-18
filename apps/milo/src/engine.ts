@@ -245,7 +245,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     // Two casual texts, "yo" then the question, once the person has replied to Milo before. Until then Inkbox allows
     // only three texts in total (each under 160 characters), so send just the question.
     const warm = hasReplied(target.phone);
-    let q = noLinks(r.payment ? `${lc(r.requester)} wants to spend ${r.payment.price} on ${endpointName(r.payment.url)}, you good with that? 👍 just this once, ❤️ always, 👎 no` : asked(r)).trim();
+    let q = noLinks(r.payment ? `${lc(r.requester)} wants to spend ${r.payment.price} on ${endpointName(r.payment.url)}, you good with that? just this once, always, or no?` : asked(r)).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
     if (q.length > 155) q = q.slice(0, 154).trimEnd() + "…";
     const sent = await (warm ? ch.imessageSend(target.phone, "yo") : Promise.resolve())
@@ -505,11 +505,11 @@ async function finish(r: Request, d: Decision, people: People, owner?: Person, t
     }
   }
 
-  // Close the loop on the text Milo sent: a threaded "taken care of" after a call, or a checkmark after a text answer.
+  // Close the loop on the text Milo sent: a threaded "taken care of" after a call, or "got it" after a text answer.
   // Skip it for someone who never replied: it would use up one of their three texts.
   if (r.imessageId && r.imessageConversationId && d.outcome !== "no_answer" && hasReplied(people[r.target ?? ""]?.phone ?? target?.phone)) {
     const close = d.source.channel === "call" ? ch.imessageInConversation(r.imessageConversationId, "taken care of over the phone", r.imessageId)
-      : d.source.channel === "imessage" ? ch.imessageInConversation(r.imessageConversationId, "✓")
+      : d.source.channel === "imessage" ? ch.imessageInConversation(r.imessageConversationId, "got it")
       : undefined;
     await close?.catch((e) => console.warn("[imessage] close-out failed:", e.detail?.message ?? e.message));
   }
