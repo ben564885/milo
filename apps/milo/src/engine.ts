@@ -245,7 +245,7 @@ async function reach(r: Request, people: People, target: Person | undefined, own
     // Two casual texts, "yo" then the question, once the person has replied to Milo before. Until then Inkbox allows
     // only three texts in total (each under 160 characters), so send just the question.
     const warm = hasReplied(target.phone);
-    let q = noLinks(r.payment ? `${r.requester} wants to pay ${r.payment.price} for ${endpointName(r.payment.url)}. ok once, always, or no? (👍 once, ❤️ always)` : asked(r)).trim();
+    let q = noLinks(r.payment ? `${lc(r.requester)} wants to spend ${r.payment.price} on ${endpointName(r.payment.url)}, you good with that? 👍 just this once, ❤️ always, 👎 no` : asked(r)).trim();
     q = q.charAt(0).toLowerCase() + q.slice(1);
     if (q.length > 155) q = q.slice(0, 154).trimEnd() + "…";
     const sent = await (warm ? ch.imessageSend(target.phone, "yo") : Promise.resolve())
