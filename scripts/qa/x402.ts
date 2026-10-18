@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.MILO_FIRST_CONTACT = "ben"; // pin defaults so local .env choices don't change the test
 process.env.MILO_PAYMENT_APPROVER = "ben";
+process.env.MILO_NO_SLACK = "1"; // tests must never post to the real Slack channel
 process.env.MILO_DB = join(mkdtempSync(join(tmpdir(), "milo-qa-")), "milo.db"); // never touch the real data/milo.db
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";

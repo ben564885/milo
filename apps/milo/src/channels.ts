@@ -40,6 +40,12 @@ export async function slackUpdate(ts: string, text: string) {
   await adminClient().slack.updateMessage(s.connectionId, s.channelId, ts, text, { idempotencyKey: `milo-upd:${randomUUID()}` }).catch((e) => console.warn("[slack] update failed:", e.message));
 }
 
+/** Show "milo is typing" in a thread (Slack assistant status). It clears when Milo posts. */
+export async function slackTyping(threadTs: string) {
+  const s = ids().slack!;
+  await adminClient().slack.setProcessingStatus(s.connectionId, s.channelId, threadTs, "processing", { idempotencyKey: `typing:${randomUUID()}` });
+}
+
 export async function slackUpload(path: string, threadTs: string, comment: string) {
   const s = ids().slack!;
   await adminClient().slack.uploadFile(s.connectionId, {

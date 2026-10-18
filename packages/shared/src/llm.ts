@@ -113,3 +113,33 @@ export function heuristicRoleChange(text: string, people: string[]): { role: Rol
   if (!person) return undefined;
   return { role: /pay|spend|approv|purchas|budget/i.test(text) ? "payment_approver" : "first_contact", person };
 }
+
+export type SlackLineKind = "ask" | "texted" | "calling" | "pulling_in" | "close" | "memory" | "owner_agent" | "no_answer" | "listening" | "still_nothing" | "pay_ask" | "pay_close";
+
+/**
+ * Write one Slack message in Milo's voice from facts. Placeholders: {who} = mention of the person
+ * being addressed, {transcript} = the transcript link. Returns undefined without OpenAI.
+ */
+export async function slackLine(kind: SlackLineKind, facts: Record<string, unknown>): Promise<string | undefined> {
+  const out = await json<{ text: string }>(
+    [
+      "You are Milo, an engineer on the team, writing one Slack message in a thread. You chase down decisions for coding agents.",
+      "Write like a real teammate: all lowercase, no emojis, casual and short (one sentence, two at most), no corporate or robotic phrasing, no exclamation marks.",
+      "Never invent facts. Use only what is in the facts. React naturally to what the person actually said.",
+      "Never write an @ sign yourself. Write {who} exactly where you address or mention the person (it becomes a real @mention). Never address the coding agent; it is not in Slack. Write {transcript} exactly where the call transcript link goes, if the facts say there is one.",
+      "Kinds and the shape of each (vary the wording, keep the facts):",
+      "ask: first message with the question. e.g. \"hey {who}, quick one from claude code: what should the hero pill say? weekly digest emails, slack summaries, or team workspaces?\"",
+      "texted: you also texted them. e.g. \"{who} texted you too\"",
+      "calling: you are calling them now. e.g. \"{who} giving you a call\"",
+      "pulling_in: you are adding {who} to the call. e.g. \"pulling {who} into the call\"",
+      "close: the question is resolved; acknowledge their actual decision in your own words, no mention needed. e.g. \"ok, leaving the pill out\" or \"green it is, philip made the call. {transcript}\"",
+      "memory: fyi someone already decided this earlier, so you didn't bother anyone. owner_agent: the owner's agent already knew.",
+      "no_answer: nobody answered, holding off. listening: nobody answered yet, you'll keep an eye on the thread. still_nothing: still no answer, holding off.",
+      "pay_ask: the coding agent wants to pay a paid api. Say the price and the endpoint exactly as given, what it sells if given, and the note if given (e.g. the price went up). End by asking: approve once, always approve, or deny. e.g. \"hey {who}, claude code wants to pay $0.01 usdc to call GET https://x.com/api/weather (current weather). approve once, always approve, or deny?\"",
+      "pay_close: the payment question is resolved. Say what was decided in plain words: paying once, approved from now on (with the daily budget if given), or not paying. e.g. \"ok, it can pay that one from now on, up to $5 a day\"",
+    ].join("\n"),
+    JSON.stringify({ kind, ...facts }),
+    { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string" } } },
+  );
+  return out?.text?.trim() || undefined;
+}

@@ -10,7 +10,7 @@ const DEFAULTS: Record<Role, string> = {
   payment_approver: process.env.MILO_PAYMENT_APPROVER ?? "ben",
 };
 
-const slackOn = () => { try { return Boolean(loadIdentities().slack); } catch { return false; } };
+const slackOn = () => { if (process.env.MILO_NO_SLACK) return false; try { return Boolean(loadIdentities().slack); } catch { return false; } };
 
 db.exec("CREATE TABLE IF NOT EXISTS roles (role TEXT PRIMARY KEY, json TEXT)");
 

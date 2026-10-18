@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "../..");
+process.env.MILO_NO_SLACK = "1"; // tests must never post to the real Slack channel
 process.env.MILO_DB = join(mkdtempSync(join(tmpdir(), "milo-qa-")), "milo.db");
 process.env.INKBOX_API_KEY = "qa-offline";
 process.env.OPENAI_API_KEY = "";
@@ -59,8 +60,13 @@ await t("always-approved endpoint: approved without asking", async () => {
 });
 await t("receipt: logged and worded for Slack", async () => {
   const text = await reportPayment({ requestId: paidId, endpoint: ask().endpoint, status: "paid", transaction: "0x" + "b".repeat(64) });
-  assert.match(text, /paid \$0\.01 USDC \(testnet\).*ben's standing approval.*\$0\.01 of \$5\.00 today.*sepolia\.basescan\.org/);
+  assert.match(text, /paid GET .* once today on ben's standing ok, \$0\.01 of \$5\.00 today.*sepolia\.basescan\.org/);
+  assert.doesNotMatch(text, /[\u{1F300}-\u{1FAFF}\u2600-\u27BF]/u);
   assert.equal(listPayments()[0].auto, true);
+});
+await t("receipt: a second payment edits the same daily line", async () => {
+  const text = await reportPayment({ requestId: paidId, endpoint: ask().endpoint, status: "paid", transaction: "0x" + "c".repeat(64) });
+  assert.match(text, /2 times today.*\$0\.02 of \$5\.00 today/);
 });
 await t("receipt for an unknown request is ignored", async () => {
   assert.match(await reportPayment({ requestId: "nope", endpoint: "x", status: "paid" }), /No approved payment/);

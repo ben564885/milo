@@ -24,6 +24,7 @@ export type Request = {
   callId?: string;
   decision?: Decision;
   replied?: boolean;
+  lastReply?: string;
   options?: string[];
   payment?: PaymentAsk;
   payNote?: string; // why a payment is asked again, e.g. the price went up
