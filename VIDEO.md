@@ -53,7 +53,7 @@ On-screen labels: "A2A", "Slack", "iMessage", "Phone", "+ guest on the same call
 | 0:00–0:05 | Black screen, white text. | "Agents need humans: for decisions, and for money." |
 | 0:05–0:12 | Claude Code: prompt 1, `paid_fetch`, the 402. | "Claude wants to pay one cent for live weather. It can't just pay. It asks Milo." |
 | 0:12–0:22 | Slack: Milo's ask, Ben types "always approve", the paid line with the Basescan link. | "Approve once, always, or deny. Ben says always." |
-| 0:22–0:28 | Basescan transaction, then the live site with the weather line. Optional: refresh, the daily line ticks to 2. | "Real USDC transfer on Base. Next time, it just pays, and logs it." |
+| 0:22–0:28 | Basescan transaction, then the live site with the weather line. Optional: refresh, the daily line ticks to 2. | "A real onchain USDC transfer on Base. Next time, it just pays, and logs it." |
 | 0:28–0:35 | Claude Code: prompt 2, `ask_human`. Slack ask, iMessage on the phone, nobody answers. | "Now a design question. Slack, then a text." |
 | 0:35–0:55 | Two phones on the table. Ben picks up, asks to add Philip. Philip joins and decides. Subtitles. | VO silent. Let the call play. |
 | 0:55–1:05 | Slack thread: decision, transcript, recording. iMessage "taken care of over the phone". Site updates. | "The decision goes back to the agent, and Milo remembers it." |
