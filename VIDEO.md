@@ -2,6 +2,43 @@
 
 Goal: in about a minute, a judge sees an agent ask permission to pay and ask for a decision, and sees Milo get real human answers across real channels. Record by **Sun 8:00 AM**.
 
+## Final script (from the team voice memo, Sat night)
+
+Pitch line: **"Milo is the persistent permission layer for agents."** Target: about 2 minutes.
+
+### Scene 1: the problem (already filmed, no Milo)
+- Ben types in Claude Code (`~/lumen-no-milo`, started with `claude --strict-mcp-config`): **"add a pricing tier for our customers' dogs"**.
+- Ben gets up and walks out of the booth. Claude's question appears on screen to an empty chair.
+- Text: "Your agent has a question. You're not here."
+
+### Scene 2: the same question, with Milo
+1. **Terminal, zoomed in:** the same prompt in `yc-demo-site`. Claude calls Milo (`ask_human`). Hold on the tool call for one beat.
+2. **Laptop, Slack notification:** Milo asks Ben in #milo-demo. Nobody answers. (Optional: Ben's Slack status goes from active to away. Milo does not read presence; it waits about 20 s. Show it as a picture, do not claim it in the VO.)
+3. **Phone on the table:** the iMessage from Milo lights up the lock screen. Ben is clearly visible far away, in a conversation.
+4. **The ringtone.** Ben looks up, runs over, sits down, picks up.
+5. **The call** (cut the latency in the edit): "Hey Ben, this is Milo…" Milo asks the dog-tier question with its options. Ben picks one (the funniest: "free with a belly rub"). "Bye." Milo hangs up.
+6. **Title cards:** "We built Milo so you can answer your agent from here," (the desk) "here," (a spontaneous spot) "or here." (the toilet).
+7. **Slack thread:** the decision, the **call recording**, and the **transcript link**. The site updates with the dog tier.
+
+### Scene 3: the agent wants to pay (x402)
+1. **Terminal:** **"add live weather data to the landing page"**. Claude calls `paid_fetch`; the weather API answers HTTP 402, $0.01 USDC.
+2. **Slack:** Milo asks: approve once, always approve, or deny? Ben, now at his desk, replies **"always approve"**.
+3. **Slack thread:** paid, who approved it, and the **transaction link**. Quick cut to the Basescan page. The site shows the live weather.
+4. **Text: "One day later."** A new chat, the same prompt. Claude pays right away: no Slack question, no text, no call. The one daily Slack line counts up. Text: "Milo remembers."
+
+### Scene 4: close
+- Owl logo. VO / text: **"Milo is the persistent permission layer for agents."**
+- "Built on Inkbox: Slack, iMessage, phone, A2A, contact memory."
+- "We hope to demo it for you this afternoon. Thank you." Team names.
+
+### Notes for the shoot
+- Phone: notifications must show on the **lock screen** (Settings > Notifications > Show Previews: Always), and the ringer must be on.
+- Save Milo as a contact first (`~/Downloads/Milo.vcf`) so the call shows "Milo" and the owl.
+- Reset before scene 2: `curl -X POST localhost:8787/api/reset`. Do **not** reset between scene 3 and "one day later", or Milo asks again.
+- Scene 2 must reach the call: do not answer in Slack or by text.
+
+---
+
 ## The one idea the video must land
 
 > Agents get stuck waiting on humans: for decisions, and for permission to spend money. Milo is the permission layer: approve, deny, or always approve, from Slack, iMessage or a phone call. Most agent payments are fractions of a cent, so "always approve" lets the agent keep working while every payment is logged in Slack.
