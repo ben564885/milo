@@ -15,6 +15,7 @@ import { endpointKey, endpointName, formatPrice, heuristicRoleChange, paymentSco
 const { checkApproval, recordPayment, revokeApproval, saveApproval, spentToday } = await import("../../apps/milo/src/payments.ts");
 const { changeRole, getRole } = await import("../../apps/milo/src/roles.ts");
 const { mountX402Demo } = await import("../../apps/milo/src/x402-demo.ts");
+const { parseAsk } = await import("../../apps/milo/src/inbox.ts");
 
 let pass = 0;
 const t = async (name: string, fn: () => unknown) => { try { await fn(); pass++; console.log("✓", name); } catch (e) { console.log("✗", name, (e as Error).message); process.exitCode = 1; } };
@@ -23,6 +24,7 @@ await t("endpointKey drops query and trailing slash", () => assert.equal(endpoin
 await t("endpointKey keeps method apart", () => assert.notEqual(endpointKey("GET", "https://a.com/x"), endpointKey("POST", "https://a.com/x")));
 await t("endpointName has no dots", () => assert.equal(endpointName("https://api.example.com/v1/weather?x=1"), "the weather api on example"));
 await t("formatPrice USDC testnet", () => assert.equal(formatPrice("10000", "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "eip155:84532"), "$0.01 USDC (testnet)"));
+await t("formatPrice zero", () => assert.equal(formatPrice("0", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "eip155:8453"), "$0.00 USDC"));
 await t("formatPrice USDC mainnet", () => assert.equal(formatPrice("1500000", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "eip155:8453"), "$1.50 USDC"));
 await t("usdValue: unknown token is undefined", () => assert.equal(usdValue("10000", "0xabc", "eip155:84532"), undefined));
 await t("usdValue: 1.5 USDC", () => assert.equal(usdValue("1500000", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "eip155:8453"), 1.5));
@@ -62,6 +64,9 @@ await t("roles: both default to ben", () => { assert.equal(getRole("first_contac
 await t("roles: anyone can change the payment approver", async () => { const r = await changeRole("payment_approver", "Philip", "Ben", "the phone"); assert.equal(r.ok, true); assert.equal(getRole("payment_approver").handle, "philip"); assert.equal(getRole("first_contact").handle, "ben"); });
 await t("roles: change first contact", async () => { await changeRole("first_contact", "daniel", "Philip", "slack"); assert.equal(getRole("first_contact").handle, "daniel"); assert.equal(getRole("first_contact").changedBy, "Philip"); });
 await t("roles: unknown person is refused", async () => { const r = await changeRole("first_contact", "Zed", "Ben", "slack"); assert.equal(r.ok, false); assert.equal(getRole("first_contact").handle, "daniel"); });
+await t("inbox: a payment receipt is not a question", () => assert.equal(parseAsk(JSON.stringify({ kind: "payment_receipt", requestId: "x", endpoint: "GET https://a.com/x", status: "paid" })).kind, "payment_receipt"));
+await t("inbox: a role change is not a question", () => assert.equal(parseAsk(JSON.stringify({ kind: "set_role", role: "first_contact", person: "Philip" })).question, undefined));
+await t("inbox: plain text is a question", () => assert.equal(parseAsk("can I ship it?").question, "can I ship it?"));
 const team = ["Ben", "Daniel", "Philip"];
 await t("role text: payments from now on", () => assert.deepEqual(heuristicRoleChange("from now on philip approves payments", team), { role: "payment_approver", person: "Philip" }));
 await t("role text: make X the first contact", () => assert.deepEqual(heuristicRoleChange("milo, make daniel the first contact", team), { role: "first_contact", person: "Daniel" }));

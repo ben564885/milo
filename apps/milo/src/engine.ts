@@ -432,6 +432,8 @@ async function buildCallReason(r: Request, target: Person, owner?: Person, peopl
 
 async function finish(r: Request, d: Decision, people: People, owner?: Person, target?: Person) {
   clear(r.id);
+  // A decision with no real outcome (e.g. a cut-off tool call on a phone call) is no answer, never a deny or an approve.
+  if (!["approved", "blocked", "redirect", "no_answer"].includes(d.outcome)) d = { ...d, outcome: "no_answer", answer: d.answer || "No clear decision." };
   // A payment decision is approve-once, always-approve, or deny. Anything that isn't a clear approval is a deny.
   if (r.payment && d.outcome !== "no_answer" && !(d.outcome === "redirect" && /^ask\b/i.test(d.instead ?? ""))) {
     const scope = paymentScope(d);

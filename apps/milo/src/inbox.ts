@@ -5,10 +5,11 @@ import { changeRole, listRoles } from "./roles.ts";
 
 const handled = new Set<string>();
 
-function parseAsk(text: string) {
+export function parseAsk(text: string) {
   try {
     const j = JSON.parse(text);
-    if (j && typeof j.question === "string") return j;
+    // A question, or a non-question message (payment receipt, role change) that must not become one.
+    if (j && (typeof j.question === "string" || typeof j.kind === "string")) return j;
   } catch {}
   return { question: text };
 }

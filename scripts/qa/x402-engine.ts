@@ -10,6 +10,8 @@ const ROOT = join(import.meta.dirname, "../..");
 process.env.MILO_DB = join(mkdtempSync(join(tmpdir(), "milo-qa-")), "milo.db");
 process.env.INKBOX_API_KEY = "qa-offline";
 process.env.OPENAI_API_KEY = "";
+process.env.MILO_FIRST_CONTACT = "ben"; // pin defaults so local .env choices don't change the test
+process.env.MILO_PAYMENT_APPROVER = "ben";
 const idsPath = join(ROOT, "config/identities.local.json");
 if (existsSync(idsPath)) {
   const ids = JSON.parse(readFileSync(idsPath, "utf8"));

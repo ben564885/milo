@@ -47,7 +47,7 @@ export function usdValue(amount: string, asset: string, network: string): number
 export function formatPrice(amount: string, asset: string, network: string): string {
   const n = usdValue(amount, asset, network);
   if (n === undefined) return `${amount} units of ${asset.slice(0, 10)}…`;
-  const shown = n >= 0.01 ? n.toFixed(2) : n.toPrecision(2);
+  const shown = n >= 0.01 || n === 0 ? n.toFixed(2) : n.toPrecision(2);
   return `$${shown} USDC${network === "eip155:84532" ? " (testnet)" : ""}`;
 }
 
